@@ -135,11 +135,10 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 
 ## ✅ Final Setup Checklist
 
-- [ ] Place `DataImporter_Gemini.py`, `VannaReplica_Gemini.py`, etc. in the root directory
 - [ ] Ensure `.streamlit/secrets.toml` exists (if used)
 - [ ] Create `chat_databases/` folder or let it auto-create on first run
 - [ ] Install requirements: `pip install -r requirements.txt`
-- [ ] Run the app: `streamlit run main_app.py`
+- [ ] Run the app: `streamlit run main_app.py` or `python -m streamlit run main_app.py`
 
 ---
 
