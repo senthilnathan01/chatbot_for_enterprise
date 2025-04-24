@@ -1,8 +1,9 @@
 # --- START OF FILE qa_engine.py ---
 """
 Handles the core question answering logic, including data queries and follow-ups.
-V3.4 Changes:
-- Refined RAG prompt to guide summary generation, prioritizing text.
+V3.5 Changes:
+- Simplified RAG prompt in generate_answer_from_context, removing references
+  to embedded image descriptions, reflecting changes in file_parsers.
 """
 
 import streamlit as st
@@ -45,6 +46,7 @@ def is_data_query(query):
     if any(agg in query_lower for agg in ['average', 'mean', 'total', 'sum', 'count', 'maximum', 'minimum']):
         return True
     return False
+
 
 # --- answer_data_query ---
 # ... (keep as is) ...
@@ -133,7 +135,7 @@ def answer_data_query(query: str, text_model_name: str) -> Tuple[str, list, Opti
                 # Format as limited table preview for non-scalar results
                 else:
                     try:
-                        max_rows_preview = 5 # Show fewer rows in the main text
+                        max_rows_preview = 5
                         max_cols_preview = 5
                         df_preview = results_df_full.head(max_rows_preview)
                         cols_omitted_preview = False
@@ -143,7 +145,7 @@ def answer_data_query(query: str, text_model_name: str) -> Tuple[str, list, Opti
                             df_preview = df_preview.iloc[:, :max_cols_preview]
                             cols_omitted_preview = True
 
-                        final_answer_string += "(Showing preview)\n" # Indicate it's a preview
+                        final_answer_string += "(Showing preview)\n"
                         final_answer_string += df_preview.to_markdown(index=False) + "\n"
 
                         omitted_parts = []
@@ -167,7 +169,9 @@ def answer_data_query(query: str, text_model_name: str) -> Tuple[str, list, Opti
                 "content_type": "database_query_result"
             })
 
-            # Include SQL and Explanation (handled via expander in main_app)
+            # Store SQL and Explanation for expander in main_app
+            # We don't add them to final_answer_string here anymore
+            # But they are available in vanna_result if needed elsewhere
 
     except Exception as e:
         st.exception(e)
@@ -181,7 +185,7 @@ def answer_data_query(query: str, text_model_name: str) -> Tuple[str, list, Opti
     return final_answer_string.strip(), metadata, results_df_full
 
 
-# --- generate_answer_from_context (RAG - UPDATED PROMPT) ---
+# --- generate_answer_from_context (RAG - SIMPLIFIED PROMPT) ---
 def generate_answer_from_context(query, context_docs, context_metadatas, text_model_name):
     """Generates answer using the specified LLM based purely on retrieved text context (RAG)."""
     if not context_docs:
@@ -211,6 +215,7 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
          content_prefix = "Content"
          actual_content = doc
 
+         # Handle data markers explicitly
          if content_type == 'data_import_success':
               tables_str = meta.get('tables', 'unknown tables')
               citation += f" (Data File - Imported [{tables_str}], query directly)"
@@ -220,16 +225,15 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
                citation += " (Data File - Import Failed)"
                actual_content = f"[Marker for failed data import '{source}'.]"
                content_prefix = "Marker"
-         elif content_type in ['embedded_image', 'image_analysis', 'ocr_page']:
-              content_prefix = "Description/Analysis"
+         # Note: 'embedded_image' and 'image_analysis' types should no longer appear for PDF/DOCX
 
          context_items.append(f"{citation}\n{content_prefix}:\n{actual_content}")
          meta_list_for_response.append(meta)
 
     context_str = "\n\n---\n\n".join(context_items)
 
-    # --- *** REFINED PROMPT FOR SUMMARIES *** ---
-    prompt = f"""You are a helpful assistant answering questions based ONLY on the provided context below.
+    # --- *** SIMPLIFIED RAG PROMPT *** ---
+    prompt = f"""You are a helpful assistant answering questions based ONLY on the text content provided in the context below.
 
     **Provided Context:**
     ```
@@ -238,12 +242,12 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
 
     **Instructions:**
     1.  Examine the user's question.
-    2.  Carefully read the **Provided Context**. Context items contain citations and content which might be text excerpts, image descriptions, or specific markers for data files.
+    2.  Carefully read the **Provided Context**. Context items contain citations and content which might be text excerpts or specific markers for data files.
     3.  **Data File Markers:** If a context item's 'Content:' or 'Marker:' section explicitly starts with `[Marker for imported data file...` or `[Marker for failed data import...]`, that item refers to a data file that cannot be directly read here. If the user's question seems related *only* to such a file marker, explain that the data must be queried separately using specific questions about its contents (e.g., "how many rows?", "what is the total revenue?"). Do *not* try to answer using the marker text itself.
-    4.  **Answering from Text/Images:** If the user's question can be answered using information from items that are *not* data file markers (i.e., regular text, image descriptions), synthesize a comprehensive answer based *only* on what is provided in these items.
-    5.  **Summarization:** If the user asks for a general summary (e.g., "what is this document about?", "summarize this"), **prioritize information from text excerpts** (e.g., content with types 'text', 'slide_text', 'ocr_page', 'crawled_web') over descriptions of embedded images. Mention key topics or findings from the text. Only include image information in a summary if it's the primary content available or adds significant context not present in the text.
-    6.  **Citations:** When using information from text or images, mention the source file and specific location (e.g., Page number, Slide number) provided in the citation line (e.g., "Source: my_doc.pdf (Page 3)") for the relevant context item(s).
-    7.  **If No Answer:** If the provided context (excluding data file markers) does not contain the information needed to answer the question, state that clearly (e.g., "Based on the provided documents, I cannot find information about X.").
+    4.  **Answering from Text:** If the user's question can be answered using information from items that are *not* data file markers, synthesize a comprehensive answer based *only* on the text provided in these items.
+    5.  **Summarization:** If the user asks for a general summary (e.g., "what is this document about?", "summarize this"), generate a concise overview based on the main topics found in the provided text excerpts.
+    6.  **Citations:** When using information from the text, mention the source file and specific location (e.g., Page number, Slide number) provided in the citation line (e.g., "Source: my_doc.pdf (Page 3)") for the relevant context item(s).
+    7.  **If No Answer:** If the provided text context (excluding data file markers) does not contain the information needed to answer the question, state that clearly (e.g., "Based on the provided documents, I cannot find information about X.").
 
     **User Question:**
     ```
@@ -252,7 +256,7 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
 
     **Answer:**
     """
-    # --- *** END REFINED PROMPT *** ---
+    # --- *** END SIMPLIFIED RAG PROMPT *** ---
 
     try:
         model = genai.GenerativeModel(text_model_name)
@@ -261,6 +265,7 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
 
         if hasattr(response, 'text'):
             answer_text = response.text
+            # Add citation hint only if non-data sources were potentially used
             unique_sources = set(m.get("source", "Unknown") for m in meta_list_for_response if m and not m.get("content_type", "").startswith("data_import"))
             contains_citation = any(f in answer_text for f in unique_sources)
             if not contains_citation and len(unique_sources) < 4 and unique_sources:
