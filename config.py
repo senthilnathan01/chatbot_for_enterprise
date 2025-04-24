@@ -1,9 +1,23 @@
 # config.py
 """Stores configuration variables and constants."""
 import os
+# --- ChromaDB Settings ---
+VECTOR_DB_PERSIST_PATH = "/mount/src/chatbot_for_enterprise/chroma_db_data" # Use an explicit path within your project/mount
+# Ensure the directory exists and has permissions
+if not os.path.exists(VECTOR_DB_PERSIST_PATH):
+     try:
+          os.makedirs(VECTOR_DB_PERSIST_PATH)
+          print(f"Created ChromaDB persistence directory: {VECTOR_DB_PERSIST_PATH}")
+     except OSError as e:
+          print(f"ERROR: Could not create ChromaDB persistence directory {VECTOR_DB_PERSIST_PATH}: {e}")
+          # Decide how to handle - maybe fall back to in-memory or raise error?
+          VECTOR_DB_PERSIST_PATH = None # Fallback if creation fails
+
+DEFAULT_COLLECTION_NAME_PREFIX = "qa_coll_"
+# VECTOR_DB_PERSIST_PATH = None # Set to a directory path for persistence, None for in-memory
 # --- Model Names ---
 TEXT_MODEL_NAME = "gemini-2.0-flash" # Use the updated model name
-VISION_MODEL_NAME = "gemini-pro-vision" # Keep vision model name consistent
+VISION_MODEL_NAME = "gemini-2.0-flash" # Keep vision model name consistent
 EMBEDDING_MODEL_NAME = "models/embedding-001" # Or a newer embedding model like "models/text-embedding-004"
 
 # --- Processing Constants ---
