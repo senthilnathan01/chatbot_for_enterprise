@@ -147,9 +147,3 @@ Then open [http://localhost:8501](http://localhost:8501) in your browser.
 
 Found a bug, want to add a feature, or improve performance?  
 Feel free to open an issue or submit a PR!
-
----
-
-## 📄 License
-
-MIT License © [Your Name or Organization]
