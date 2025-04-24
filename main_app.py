@@ -1,14 +1,3 @@
-# --- START OF FILE main_app.py ---
-"""
-Main Streamlit application file for the Multi-Modal Q&A Chatbot.
-Handles UI, state management, and orchestrates calls to other modules.
-V5.5 Changes:
-- Added button to display full DataFrame results for data queries.
-- Modified qa_engine.answer_data_query to return the full DataFrame.
-- Updated message state to store the DataFrame.
-- Updated message rendering logic to include the display button and action.
-"""
-
 try:
     __import__('pysqlite3')
     import sys
