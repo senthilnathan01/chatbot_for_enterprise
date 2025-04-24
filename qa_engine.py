@@ -1,14 +1,16 @@
 # --- START OF FILE qa_engine.py ---
 """
 Handles the core question answering logic, including data queries and follow-ups.
-V3.1 Changes:
-- Improved display of scalar results (e.g., single numbers like AVG, SUM, COUNT) in answer_data_query.
-- Made explanation less prominent by default when a scalar result is shown.
+V3.2 Changes:
+- answer_data_query now returns the full DataFrame alongside the text summary.
+- Text summary indicates when a full table is available via a button.
+- Added explicit check for DataFrame type before attempting formatting.
 """
 
 import streamlit as st
 import google.generativeai as genai
-import pandas as pd
+import pandas as pd # Ensure pandas is imported
+from typing import Optional, Tuple, List, Any # Import necessary types
 import json
 import re
 import io
@@ -36,29 +38,22 @@ def is_data_query(query):
         "data for", "records where", "entries matching", "find rows", "summarise",
         "what is the", "give me the", "tell me the" # More question starters
     ]
-    # Simple check for common question structures about data
     query_lower = query.lower()
     if re.match(r'^(what|how|list|show|give|tell|calculate|find|get)\b', query_lower):
          if any(keyword in query_lower for keyword in data_keywords):
               return True
-    # Catch simple column/row requests
     if any(keyword in query_lower for keyword in ["rows", "columns", "records", "entries"]):
         return True
-    # Catch direct table references if user knows them (less likely)
-    # Be careful with this one, could overlap with RAG
-    # if "table" in query_lower and any(kw in query_lower for kw in ['show', 'list', 'data']): return True
-
-    # Check specifically for aggregate functions explicitly mentioned
     if any(agg in query_lower for agg in ['average', 'mean', 'total', 'sum', 'count', 'maximum', 'minimum']):
         return True
-
     return False
 
 
-def answer_data_query(query: str, text_model_name: str) -> tuple[str, list]:
+# --- Modified Function Signature and Return ---
+def answer_data_query(query: str, text_model_name: str) -> Tuple[str, list, Optional[pd.DataFrame]]:
     """
     Answers a query using the VannaDataAnalyzer_Gemini against the chat's specific database.
-    Formats scalar results (single numbers) directly.
+    Formats scalar results directly, provides limited table preview, and returns full DataFrame.
 
     Args:
         query: The user's natural language question about the data.
@@ -66,22 +61,22 @@ def answer_data_query(query: str, text_model_name: str) -> tuple[str, list]:
 
     Returns:
         A tuple containing:
-        - answer_string (str): Formatted answer including SQL, results, explanation.
+        - answer_string (str): Formatted text answer (scalar, preview, or error).
         - metadata_list (list): Metadata indicating the database source.
+        - results_df (Optional[pd.DataFrame]): The full DataFrame result, or None if error/no results.
     """
     log_message(f"Attempting to answer data query using Vanna Engine: '{query}'", "info")
     analyzer = None
-    # Start with a less verbose intro
     final_answer_string = f"Okay, analyzing the data based on your query: '{query}'...\n\n"
     metadata = []
-    result_was_scalar = False # Flag to check if we handled a single value
+    results_df_full: Optional[pd.DataFrame] = None # Initialize df to None
 
     try:
         # 1. Get Current Chat State and Necessary Info
         current_chat_state = get_current_chat_state()
         if not current_chat_state:
              log_message("Data Query Error: Could not get current chat state.", "error")
-             return "Error: Could not access the current chat session.", []
+             return "Error: Could not access the current chat session.", [], None
 
         chat_db_path = current_chat_state.get("chat_db_path")
         api_key = st.session_state.get("google_api_key")
@@ -89,13 +84,13 @@ def answer_data_query(query: str, text_model_name: str) -> tuple[str, list]:
 
         if not chat_db_path:
              log_message("Data Query Info: No database found for this chat session.", "info")
-             return "It looks like no data files (CSV, Excel, JSON) have been successfully imported in this chat session yet. Please upload a data file first.", []
+             return "It looks like no data files (CSV, Excel, JSON) have been successfully imported in this chat session yet. Please upload a data file first.", [], None
         if not api_key:
              log_message("Data Query Error: API Key not found.", "error")
-             return "Error: API Key is not configured, cannot analyze data.", []
+             return "Error: API Key is not configured, cannot analyze data.", [], None
         if not imported_tables:
             log_message("Data Query Info: Database exists but no imported tables recorded.", "warning")
-            return "A database exists for this chat, but I don't have a record of which tables were imported. Please try re-uploading the data file.", []
+            return "A database exists for this chat, but I don't have a record of which tables were imported. Please try re-uploading the data file.", [], None
 
         # 2. Initialize VannaDataAnalyzer
         log_message(f"Initializing VannaDataAnalyzer for DB: {chat_db_path}", "debug")
@@ -104,110 +99,99 @@ def answer_data_query(query: str, text_model_name: str) -> tuple[str, list]:
         )
 
         # 3. Ask Vanna
-        vanna_result = analyzer.ask(question=query, explain=True) # Get explanation even if not shown by default
+        vanna_result = analyzer.ask(question=query, explain=True) # Still get explanation
 
         # 4. Process and Format the Result
         if vanna_result.get("error"):
             log_message(f"Vanna Error: {vanna_result['error']}", "error")
             final_answer_string += f"Sorry, I encountered an error trying to analyze the data: {vanna_result['error']}"
             if vanna_result.get("sql_query"):
-                final_answer_string += f"\n\n(Attempted SQL:\n```sql\n{vanna_result['sql_query']}\n```)" # Make SQL less prominent on error
+                final_answer_string += f"\n\n(Attempted SQL:\n```sql\n{vanna_result['sql_query']}\n```)"
 
         else:
             sql_query = vanna_result.get("sql_query", "N/A")
-            results_df = vanna_result.get("results")
+            # Store the full DataFrame result
+            results_df_full = vanna_result.get("results")
             explanation = vanna_result.get("explanation", "No explanation generated.")
 
-            # --- Result Formatting ---
-            final_answer_string += "**Result:**\n" # Changed header
-            if isinstance(results_df, pd.DataFrame):
-                if results_df.empty:
-                    if "status" in results_df.columns and "Execution successful" in results_df["status"].values:
-                         rows_aff = results_df["rows_affected"].iloc[0]
+            # --- Result Formatting for Text Response ---
+            final_answer_string += "**Result:**\n"
+            if isinstance(results_df_full, pd.DataFrame):
+                if results_df_full.empty:
+                    if "status" in results_df_full.columns and "Execution successful" in results_df_full["status"].values:
+                         rows_aff = results_df_full["rows_affected"].iloc[0]
                          final_answer_string += f"(Query executed successfully. Rows affected: {rows_aff})\n"
                     else:
                          final_answer_string += "(Query returned no results)\n"
-                # --- Check for SCALAR result (1 row, 1 column) ---
-                elif results_df.shape == (1, 1):
-                    scalar_value = results_df.iloc[0, 0]
-                    result_was_scalar = True # Set flag
-                    # Format the scalar value nicely
-                    if pd.isna(scalar_value):
-                         formatted_value = "(No value)"
-                    elif isinstance(scalar_value, float):
-                         # Format float to appropriate precision, avoid excessive zeros
-                         formatted_value = f"{scalar_value:,.2f}".rstrip('0').rstrip('.') if '.' in f"{scalar_value:,.2f}" else f"{scalar_value:,.0f}"
-                    elif isinstance(scalar_value, int):
-                         formatted_value = f"{scalar_value:,}" # Add comma separators for integers
-                    else:
-                         formatted_value = str(scalar_value)
-                    final_answer_string += f"**{formatted_value}**\n" # Display the single value directly and bolded
+                # Check for SCALAR result (1 row, 1 column)
+                elif results_df_full.shape == (1, 1):
+                    scalar_value = results_df_full.iloc[0, 0]
+                    if pd.isna(scalar_value): formatted_value = "(No value)"
+                    elif isinstance(scalar_value, float): formatted_value = f"{scalar_value:,.2f}".rstrip('0').rstrip('.') if '.' in f"{scalar_value:,.2f}" else f"{scalar_value:,.0f}"
+                    elif isinstance(scalar_value, int): formatted_value = f"{scalar_value:,}"
+                    else: formatted_value = str(scalar_value)
+                    final_answer_string += f"**{formatted_value}**\n"
                     log_message(f"Displayed scalar result: {formatted_value}", "debug")
-                # --- End Scalar Check ---
+                # Format as limited table preview for non-scalar results
                 else:
-                    # Format as table for non-scalar results
                     try:
-                        max_rows_display = 20
-                        max_cols_display = 10
-                        df_display = results_df.head(max_rows_display)
-                        cols_omitted = False
+                        max_rows_preview = 5 # Show fewer rows in the main text
+                        max_cols_preview = 5
+                        df_preview = results_df_full.head(max_rows_preview)
+                        cols_omitted_preview = False
+                        rows_omitted_preview = len(results_df_full) > max_rows_preview
 
-                        if len(df_display.columns) > max_cols_display:
-                            df_display = df_display.iloc[:, :max_cols_display]
-                            cols_omitted = True
+                        if len(df_preview.columns) > max_cols_preview:
+                            df_preview = df_preview.iloc[:, :max_cols_preview]
+                            cols_omitted_preview = True
 
-                        # Use a simpler table format or ensure markdown rendering works
-                        final_answer_string += df_display.to_markdown(index=False) + "\n"
+                        final_answer_string += "(Showing preview)\n" # Indicate it's a preview
+                        final_answer_string += df_preview.to_markdown(index=False) + "\n"
 
-                        if cols_omitted:
-                            final_answer_string += f"\n*(Displaying first {max_cols_display} of {len(results_df.columns)} columns)*"
-                        if len(results_df) > max_rows_display:
-                            final_answer_string += f"\n*(Showing first {max_rows_display} of {len(results_df)} total rows)*"
-                        # Add a newline after table info
-                        final_answer_string += "\n"
+                        omitted_parts = []
+                        if cols_omitted_preview: omitted_parts.append(f"first {max_cols_preview} cols")
+                        if rows_omitted_preview: omitted_parts.append(f"first {max_rows_preview} rows")
+                        if omitted_parts: final_answer_string += f"\n*({', '.join(omitted_parts)} of {len(results_df_full)} total rows shown)*"
+
+                        # Add note about the full table button
+                        final_answer_string += "\n\n*(Use the button below to view the full data table.)*"
 
                     except Exception as fmt_err:
-                         log_message(f"Error formatting DataFrame to markdown: {fmt_err}", "warning")
-                         final_answer_string += "(Could not display results table nicely. Data was retrieved.)\n"
+                         log_message(f"Error formatting DataFrame preview to markdown: {fmt_err}", "warning")
+                         final_answer_string += "(Could not display preview. Full table available via button below.)\n"
             else:
                 final_answer_string += "(No DataFrame results returned)\n"
 
-            # --- Optional SQL and Explanation ---
-            # Add these within an expander or conditionally
-            with st.expander("Query Details (SQL & Explanation)", expanded=False):
-                 st.markdown(f"**Generated SQL Query:**\n```sql\n{sql_query}\n```")
-                 st.markdown(f"**Explanation:**\n{explanation}")
 
-            # Alternatively, add directly but less prominently if result was scalar:
-            # if not result_was_scalar:
-            #      final_answer_string += f"\n**Generated SQL Query:**\n```sql\n{sql_query}\n```"
-            #      final_answer_string += f"\n**Explanation:**\n{explanation}"
-            # else:
-            #      # Maybe add a note that details are available?
-            #      final_answer_string += "\n*(SQL query and explanation are available)*"
-
-
-            # Add metadata
+            # Add metadata (only add if query execution seemed successful)
             metadata.append({
                 "source": f"database_{current_chat_state['chat_id']}",
                 "database": chat_db_path,
-                "tables": ", ".join(imported_tables), # Keep as string
+                "tables": ", ".join(imported_tables),
                 "content_type": "database_query_result"
             })
+
+            # Include SQL and Explanation (maybe make this less prominent or conditional)
+            # For now, let's keep it in the text response, but it could go in the expander
+            # final_answer_string += f"\n\n**Generated SQL Query:**\n```sql\n{sql_query}\n```"
+            # final_answer_string += f"\n\n**Explanation:**\n{explanation}"
+
 
     except Exception as e:
         st.exception(e)
         log_message(f"Critical error in answer_data_query: {e}", "error")
         final_answer_string += f"\n\nAn unexpected error occurred while trying to answer the data query: {e}"
+        results_df_full = None # Ensure DF is None on error
     finally:
         if analyzer:
             analyzer.close()
 
-    return final_answer_string.strip(), metadata # Remove trailing whitespace
+    # --- Return text summary, metadata, and the FULL DataFrame ---
+    return final_answer_string.strip(), metadata, results_df_full
 
 
 # --- generate_answer_from_context (RAG - Keep As Is) ---
-# ... (rest of the function is unchanged) ...
+# ... (unchanged) ...
 def generate_answer_from_context(query, context_docs, context_metadatas, text_model_name): # Added text_model_name
     """Generates answer using the specified LLM based purely on retrieved text context (RAG)."""
     if not context_docs:
@@ -236,8 +220,8 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
          elif meta.get('slide_number'): citation += f" (Slide {meta.get('slide_number')})"
          elif meta.get('crawled_url'): citation += f" (From URL: {meta.get('crawled_url')})"
          elif meta.get('content_type') == 'data_import_success':
-              # Special citation for data markers - don't include the marker text itself in context
-              citation += " (Data File - Imported, ask questions about content)"
+              tables_str = meta.get('tables', 'unknown tables')
+              citation += f" (Data File - Imported [{tables_str}], ask questions about content)"
               context_items.append(f"{citation}\nContent:\n[Marker for imported data file '{source}'. Query its content directly.]")
          elif meta.get('content_type') == 'data_import_failed':
                citation += " (Data File - Import Failed)"
@@ -258,6 +242,7 @@ For all other questions, synthesize an answer from the text/image content provid
 
 **Provided Context:**
 {context_str}
+
 **User Question:**
 {query}
 
@@ -289,7 +274,7 @@ For all other questions, synthesize an answer from the text/image content provid
 
 
 # --- generate_followup_questions ---
-# ... (keep as is, potentially add logic to avoid follow-ups for scalar data results) ...
+# ... (keep as is) ...
 def generate_followup_questions(query, answer, text_model_name): # Added text_model_name
      """Generates relevant follow-up questions using the specified LLM."""
      # Avoid generating follow-ups for data query results or errors
@@ -347,5 +332,3 @@ def generate_followup_questions(query, answer, text_model_name): # Added text_mo
          # Don't show full exception to user, just log it
          log_message(f"Error generating follow-up questions with LLM {text_model_name}: {e}", "error")
          return []
-
-# --- END OF FILE qa_engine.py ---
