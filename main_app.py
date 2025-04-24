@@ -43,7 +43,7 @@ st.caption("Switch chats, upload docs/data, ask questions about text, images, or
 
 
 # --- Constants for Model Selection ---
-AVAILABLE_TEXT_MODELS = ["gemini-1.0-pro", "gemini-1.5-pro-latest", "gemini-1.5-flash", "gemini-pro"]
+AVAILABLE_TEXT_MODELS = ["gemini-2.0-flash"]
 
 # --- Global Variables / Initializations ---
 # ... (keep initialize_chroma_client as is) ...
