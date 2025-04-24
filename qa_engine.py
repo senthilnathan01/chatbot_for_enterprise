@@ -1,27 +1,31 @@
 # --- START OF FILE qa_engine.py ---
-
+"""
+Handles the core question answering logic, including data queries and follow-ups.
+V3.4 Changes:
+- Refined RAG prompt to guide summary generation, prioritizing text.
+"""
 
 import streamlit as st
 import google.generativeai as genai
 import pandas as pd
-from typing import Optional, Tuple, List, Any # Import necessary types
+from typing import Optional, Tuple, List, Any
 import json
 import re
 import io
 from utils import log_message
-# Import Vanna Analyzer
 from VannaDataAnalyzer_Gemini import VannaDataAnalyzer_Gemini
 
 # --- Helper to get chat state ---
+# ... (keep as is) ...
 def get_current_chat_state():
     """Safely retrieves the state dictionary for the currently active chat."""
     if "current_chat_id" not in st.session_state or st.session_state.current_chat_id not in st.session_state.get("chats", {}):
         log_message("Helper get_current_chat_state: Cannot determine current chat state.", "error")
         return None
     return st.session_state.chats.get(st.session_state.current_chat_id)
-# --- End Helper ---
 
-
+# --- is_data_query ---
+# ... (keep as is) ...
 def is_data_query(query):
     """Basic keyword-based check if a query seems related to structured data."""
     data_keywords = [
@@ -42,8 +46,8 @@ def is_data_query(query):
         return True
     return False
 
-
-# --- Modified Function Signature and Return ---
+# --- answer_data_query ---
+# ... (keep as is) ...
 def answer_data_query(query: str, text_model_name: str) -> Tuple[str, list, Optional[pd.DataFrame]]:
     """
     Answers a query using the VannaDataAnalyzer_Gemini against the chat's specific database.
@@ -163,10 +167,7 @@ def answer_data_query(query: str, text_model_name: str) -> Tuple[str, list, Opti
                 "content_type": "database_query_result"
             })
 
-            # Keep SQL and Explanation less prominent or in expander (handled in main_app UI)
-            # final_answer_string += f"\n\n**Generated SQL Query:**\n```sql\n{sql_query}\n```"
-            # final_answer_string += f"\n\n**Explanation:**\n{explanation}"
-
+            # Include SQL and Explanation (handled via expander in main_app)
 
     except Exception as e:
         st.exception(e)
@@ -180,7 +181,7 @@ def answer_data_query(query: str, text_model_name: str) -> Tuple[str, list, Opti
     return final_answer_string.strip(), metadata, results_df_full
 
 
-# --- generate_answer_from_context (RAG - FIXED PROMPT) ---
+# --- generate_answer_from_context (RAG - UPDATED PROMPT) ---
 def generate_answer_from_context(query, context_docs, context_metadatas, text_model_name):
     """Generates answer using the specified LLM based purely on retrieved text context (RAG)."""
     if not context_docs:
@@ -191,7 +192,6 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
             return f"I couldn't find relevant information in the text documents for '{query}'. However, I see that data file(s) ({', '.join(imported_files)}) were imported. Try asking a specific question about the data content (e.g., 'how many rows in {imported_files[0]}?', 'what is the total sales?').", []
         else:
             return "I cannot answer this question based on the provided documents.", []
-
 
     context_items = []
     source_files = set()
@@ -206,17 +206,14 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
          if meta.get('page_number'): citation += f" (Page {meta.get('page_number')})"
          elif meta.get('slide_number'): citation += f" (Slide {meta.get('slide_number')})"
          elif meta.get('crawled_url'): citation += f" (From URL: {meta.get('crawled_url')})"
-         # Add content type to citation for clarity if needed, e.g. "(Image Analysis)"
 
-         # --- Construct context item based on type ---
-         content_type = meta.get("content_type", "text") # Default to text
+         content_type = meta.get("content_type", "text")
          content_prefix = "Content"
-         actual_content = doc # Default to the document/text chunk
+         actual_content = doc
 
          if content_type == 'data_import_success':
               tables_str = meta.get('tables', 'unknown tables')
               citation += f" (Data File - Imported [{tables_str}], query directly)"
-              # Use the specific marker text as the content
               actual_content = f"[Marker for imported data file '{source}'. Query its content directly.]"
               content_prefix = "Marker"
          elif content_type == 'data_import_failed':
@@ -224,17 +221,14 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
                actual_content = f"[Marker for failed data import '{source}'.]"
                content_prefix = "Marker"
          elif content_type in ['embedded_image', 'image_analysis', 'ocr_page']:
-              content_prefix = "Description/Analysis" # Use a different prefix for image content
+              content_prefix = "Description/Analysis"
 
          context_items.append(f"{citation}\n{content_prefix}:\n{actual_content}")
-         # --- End content item construction ---
-
          meta_list_for_response.append(meta)
-
 
     context_str = "\n\n---\n\n".join(context_items)
 
-    # --- *** MODIFIED PROMPT *** ---
+    # --- *** REFINED PROMPT FOR SUMMARIES *** ---
     prompt = f"""You are a helpful assistant answering questions based ONLY on the provided context below.
 
     **Provided Context:**
@@ -244,11 +238,12 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
 
     **Instructions:**
     1.  Examine the user's question.
-    2.  Carefully read the **Provided Context**. Some context items might be text excerpts, image descriptions, or specific markers for data files.
-    3.  **If a context item's 'Content:' or 'Marker:' section explicitly starts with `[Marker for imported data file...` or `[Marker for failed data import...]`**, that item refers to a data file that cannot be directly read here. If the user's question seems related to such a file, explain that the data must be queried separately using specific questions about its contents (e.g., "how many rows?", "what is the total revenue?"). Do *not* try to answer using the marker text itself.
-    4.  **For all other context items (regular text, image descriptions):** If the user's question can be answered using this information, synthesize a comprehensive answer based *only* on what is provided in these items.
-    5.  **Cite your sources:** When using information from text or images, mention the source file and specific location (e.g., Page number, Slide number, Image reference) provided in the citation line (e.g., "Source: my_doc.pdf (Page 3)") for the relevant context item(s). Do not make up information.
-    6.  If the provided context (excluding data file markers) does not contain the information needed to answer the question, state that clearly (e.g., "Based on the provided documents, I cannot find information about X.").
+    2.  Carefully read the **Provided Context**. Context items contain citations and content which might be text excerpts, image descriptions, or specific markers for data files.
+    3.  **Data File Markers:** If a context item's 'Content:' or 'Marker:' section explicitly starts with `[Marker for imported data file...` or `[Marker for failed data import...]`, that item refers to a data file that cannot be directly read here. If the user's question seems related *only* to such a file marker, explain that the data must be queried separately using specific questions about its contents (e.g., "how many rows?", "what is the total revenue?"). Do *not* try to answer using the marker text itself.
+    4.  **Answering from Text/Images:** If the user's question can be answered using information from items that are *not* data file markers (i.e., regular text, image descriptions), synthesize a comprehensive answer based *only* on what is provided in these items.
+    5.  **Summarization:** If the user asks for a general summary (e.g., "what is this document about?", "summarize this"), **prioritize information from text excerpts** (e.g., content with types 'text', 'slide_text', 'ocr_page', 'crawled_web') over descriptions of embedded images. Mention key topics or findings from the text. Only include image information in a summary if it's the primary content available or adds significant context not present in the text.
+    6.  **Citations:** When using information from text or images, mention the source file and specific location (e.g., Page number, Slide number) provided in the citation line (e.g., "Source: my_doc.pdf (Page 3)") for the relevant context item(s).
+    7.  **If No Answer:** If the provided context (excluding data file markers) does not contain the information needed to answer the question, state that clearly (e.g., "Based on the provided documents, I cannot find information about X.").
 
     **User Question:**
     ```
@@ -257,7 +252,7 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
 
     **Answer:**
     """
-    # --- *** END MODIFIED PROMPT *** ---
+    # --- *** END REFINED PROMPT *** ---
 
     try:
         model = genai.GenerativeModel(text_model_name)
@@ -266,9 +261,7 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
 
         if hasattr(response, 'text'):
             answer_text = response.text
-            # Add citation hint only if non-data sources were potentially used
             unique_sources = set(m.get("source", "Unknown") for m in meta_list_for_response if m and not m.get("content_type", "").startswith("data_import"))
-            # Check if answer itself contains any of the source filenames
             contains_citation = any(f in answer_text for f in unique_sources)
             if not contains_citation and len(unique_sources) < 4 and unique_sources:
                  answer_text += f"\n\n(Sources possibly consulted: {', '.join(sorted(list(unique_sources)))})"
@@ -289,7 +282,6 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
 # ... (keep as is) ...
 def generate_followup_questions(query, answer, text_model_name):
     """Generates relevant follow-up questions using the specified LLM."""
-    # Avoid generating follow-ups for data query results or errors
     if "[Data File Imported:" in answer or "Generated SQL Query:" in answer or "Sorry, I encountered an error" in answer or "Result:" in answer:
          return []
 
