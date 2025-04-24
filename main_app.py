@@ -1,14 +1,12 @@
-try:
-    __import__('pysqlite3')
-    import sys
-    # Print statements to help debug in Streamlit Cloud logs
-    print("Attempting to patch sqlite3 with pysqlite3...")
-    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-    print("Successfully patched sqlite3 with pysqlite3.")
-except ImportError:
-    print("pysqlite3 not found. Using default sqlite3. This will likely cause ChromaDB errors.")
-except KeyError:
-    print("pysqlite3 was imported but perhaps already handled? Or an issue popping it.")
+# --- START OF FILE main_app.py ---
+"""
+Main Streamlit application file for the Multi-Modal Q&A Chatbot.
+Handles UI, state management, and orchestrates calls to other modules.
+V5.6 Changes:
+- Added logic to detect summary queries.
+- Filter retrieved context for summary queries to prioritize text over image analysis.
+- Updated qa_engine call for summary context.
+"""
 
 import streamlit as st
 import google.generativeai as genai
@@ -17,21 +15,23 @@ import os
 import time
 import random
 import string
-import pandas as pd # Keep pandas import
+import pandas as pd
 from datetime import datetime
+import re # Import re for summary query detection
 
 # Import functions from our modules
 from config import (
     DEFAULT_COLLECTION_NAME_PREFIX, ALL_SUPPORTED_TYPES,
     VECTOR_DB_PERSIST_PATH, CHAT_DB_DIRECTORY,
     TEXT_MODEL_NAME as DEFAULT_TEXT_MODEL_NAME,
-    SUPPORTED_DATA_TYPES # Import data types list
+    SUPPORTED_DATA_TYPES, SUPPORTED_TEXT_TYPES # Added text types
 )
 from utils import log_message, generate_unique_id
 from vector_store import initialize_embedding_function, process_and_embed, get_relevant_context
 from qa_engine import is_data_query, answer_data_query, generate_answer_from_context, generate_followup_questions
 
 # --- Page Configuration ---
+# ... (keep as is) ...
 st.set_page_config(
     page_title="Persistent Multi-Modal Q&A + Data Analysis",
     layout="wide",
@@ -41,34 +41,37 @@ st.set_page_config(
 st.title("📄 Persistent Multi-Modal Q&A & Data Analysis")
 st.caption("Switch chats, upload docs/data, ask questions about text, images, or analyze your CSV/Excel/JSON!")
 
+
 # --- Constants for Model Selection ---
-AVAILABLE_TEXT_MODELS = ["gemini-2.0-flash", "gemini-1.5-pro-latest", "gemini-1.5-flash", "gemini-pro"]
+AVAILABLE_TEXT_MODELS = ["gemini-1.0-pro", "gemini-1.5-pro-latest", "gemini-1.5-flash", "gemini-pro"]
 
 # --- Global Variables / Initializations ---
+# ... (keep initialize_chroma_client as is) ...
 @st.cache_resource
 def initialize_chroma_client():
     """Initializes ChromaDB client, cached for the session."""
     log_message("Initializing ChromaDB client...", "debug")
-    if VECTOR_DB_PERSIST_PATH and os.path.exists(VECTOR_DB_PERSIST_PATH):
-        log_message(f"Using persistent ChromaDB storage at: {VECTOR_DB_PERSIST_PATH}", "info")
+    persist_path = VECTOR_DB_PERSIST_PATH
+    if persist_path and os.path.exists(persist_path):
+        log_message(f"Using persistent ChromaDB storage at: {persist_path}", "info")
         try:
-            client = chromadb.PersistentClient(path=VECTOR_DB_PERSIST_PATH)
+            client = chromadb.PersistentClient(path=persist_path)
             return client
         except Exception as e:
-             log_message(f"Error loading persistent ChromaDB from {VECTOR_DB_PERSIST_PATH}: {e}. Falling back to in-memory.", "error")
-             # Fallback to in-memory if persistent fails
+             log_message(f"Error loading persistent ChromaDB from {persist_path}: {e}. Falling back to in-memory.", "error")
              log_message("Using in-memory ChromaDB storage.", "info")
              client = chromadb.Client()
              return client
     else:
-        if VECTOR_DB_PERSIST_PATH:
-            log_message(f"Persistent path {VECTOR_DB_PERSIST_PATH} not found. Using in-memory ChromaDB storage.", "warning")
+        if persist_path:
+            log_message(f"Persistent path {persist_path} not found or invalid. Using in-memory ChromaDB storage.", "warning")
         else:
             log_message("Using in-memory ChromaDB storage.", "info")
         client = chromadb.Client()
         return client
 
-# --- Session State Management for Multi-Chat ---
+# --- Session State Management ---
+# ... (keep create_new_chat_state, initialize_multi_chat_state, get_current_chat_state as is) ...
 def create_new_chat_state(chat_id):
     """Creates the default state dictionary for a new chat."""
     return {
@@ -84,7 +87,6 @@ def create_new_chat_state(chat_id):
         "created_at": datetime.now().isoformat()
     }
 
-# --- Initialize Multi-Chat State ---
 def initialize_multi_chat_state():
     """Initializes the main chat structure if it doesn't exist."""
     if "chats" not in st.session_state:
@@ -128,31 +130,25 @@ def initialize_multi_chat_state():
 
 initialize_multi_chat_state()
 
-# --- Helper to get current chat state ---
 def get_current_chat_state():
     """Safely retrieves the state dictionary for the currently active chat."""
     current_id = st.session_state.get("current_chat_id")
     if not current_id or current_id not in st.session_state.get("chats", {}):
-        initialize_multi_chat_state() # Try to fix state
-        current_id = st.session_state.get("current_chat_id") # Get potentially new ID
+        initialize_multi_chat_state()
+        current_id = st.session_state.get("current_chat_id")
         if not current_id or current_id not in st.session_state.get("chats", {}):
              log_message("Critical Error: Cannot determine current chat state after re-initialization.", "error")
              st.error("Critical error loading chat state. Please refresh.")
              return None
-    # Check if the state associated with the ID is actually a dictionary
     chat_state = st.session_state.chats.get(current_id)
     if not isinstance(chat_state, dict):
          log_message(f"Critical Error: Chat state for ID {current_id} is not a dictionary.", "error")
-         # Attempt to fix by creating a new chat? Or just error out? Error out for now.
          st.error(f"Chat session data for '{current_id[-4:]}' seems corrupted. Please start a new chat.")
-         # Optionally try to reset the specific corrupted chat state
-         # st.session_state.chats[current_id] = create_new_chat_state(current_id)
-         # initialize_multi_chat_state() # Or re-initialize completely
          return None
     return chat_state
 
-
 # --- API Key Handling & Model Selection (Sidebar) ---
+# ... (keep as is) ...
 with st.sidebar:
     st.header("⚙️ Configuration")
     # Model Selection
@@ -181,7 +177,7 @@ with st.sidebar:
              final_google_api_key = google_api_key_input
              st.session_state.google_api_key = google_api_key_input # Store user input
         else:
-             final_google_api_key = current_key or env_api_key or secrets_api_key
+             final_google_api_key = current_key or env_api_key or secrets_api_key # Use existing or fallback
 
         # Store the determined key if it's different from current session key or if none is stored
         if final_google_api_key and final_google_api_key != st.session_state.get("google_api_key"):
@@ -195,6 +191,7 @@ with st.sidebar:
         st.session_state.google_api_key = None
 
 # --- Configure Google AI API and Embedding Function ---
+# ... (keep as is) ...
 if final_google_api_key and not st.session_state.api_key_configured:
     try:
         log_message("Attempting to configure Google AI API...", "debug")
@@ -214,7 +211,8 @@ if final_google_api_key and not st.session_state.api_key_configured:
         st.session_state.embedding_func = None
         if "google_api_key" in st.session_state: del st.session_state.google_api_key
 
-# Display API status consistently in sidebar
+# --- Display API status ---
+# ... (keep as is) ...
 with st.sidebar:
     if st.session_state.get("api_key_configured"):
         st.success("API Key Configured.")
@@ -227,6 +225,7 @@ with st.sidebar:
 chroma_client = initialize_chroma_client()
 
 # --- File Processing Callback ---
+# ... (keep handle_file_upload as is) ...
 def handle_file_upload():
     """Callback for file uploader. Processes files for the CURRENT chat."""
     log_message("File uploader callback started.", "debug")
@@ -295,7 +294,10 @@ def handle_file_upload():
          log_message(f"[{current_chat_id}] Calling process_and_embed...", "debug")
          # process_and_embed updates chat_state["processed_files"] internally via file_parsers
          chroma_add_attempted = process_and_embed(uploaded_files, collection, emb_func)
-         chroma_success = chroma_add_attempted # Assume success if add was attempted without critical failure reported by func return
+         # Check overall chroma success by seeing if *any* file associated with chroma add succeeded
+         chroma_success = any(status == 'success' for filename, status in chat_state.get("processed_files", {}).items()
+                              if not filename.lower().endswith(tuple(f".{ext}" for ext in SUPPORTED_DATA_TYPES)))
+
 
          # Check individual file statuses for data import outcome
          data_file_extensions = tuple(f".{ext}" for ext in SUPPORTED_DATA_TYPES)
@@ -303,10 +305,10 @@ def handle_file_upload():
              if f.name.lower().endswith(data_file_extensions):
                  data_import_occurred = True # Mark that we processed at least one data file
                  status = chat_state["processed_files"].get(f.name)
-                 if status == 'failed' or status == 'skipped':
+                 if status != 'success': # Consider anything not success as failure for data import
                      data_import_success = False
                      log_message(f"Data import for {f.name} marked as {status}.", "warning")
-                     # break # Don't break, let all files process
+                     # break # Let all files process, report aggregate status
 
     else:
          log_message(f"[{current_chat_id}] Processing aborted: Collection/Embedding func unavailable.", "error")
@@ -328,6 +330,7 @@ def handle_file_upload():
     log_message(f"Callback: Set Data Import status to '{chat_state['data_import_status']}' for chat {current_chat_id}", "debug")
 
 # --- Helper to get Chroma Collection ---
+# ... (keep as is) ...
 def get_current_collection():
     """Gets the ChromaDB collection object for the current chat."""
     chat_state = get_current_chat_state()
@@ -347,6 +350,7 @@ def get_current_collection():
         return None
 
 # --- Sidebar UI ---
+# ... (keep as is, including deletion logic) ...
 with st.sidebar:
     # Chat Management
     st.header("📄 Chat Management")
@@ -439,6 +443,25 @@ with st.sidebar:
                         initialize_multi_chat_state()
                 st.rerun() # Rerun to update the UI
 
+# --- Helper Function to Detect Summary Queries ---
+def is_summary_query(query: str) -> bool:
+    """Checks if a query is likely asking for a general summary."""
+    query_lower = query.lower().strip()
+    summary_keywords = [
+        "what is this document about", "summarize this document", "summarize",
+        "summary of", "tell me about this doc", "overview of", "what does this file say",
+        "give me a summary", "general topic", "main points"
+    ]
+    # Check for exact matches or variations
+    if query_lower in summary_keywords:
+        return True
+    # Check for start patterns
+    if query_lower.startswith(("summarize", "what is", "tell me about", "overview of")):
+        # Add checks for document references if needed, e.g., "summarize the pdf"
+        if "document" in query_lower or "file" in query_lower or "pdf" in query_lower or "doc" in query_lower:
+            return True
+    return False
+
 # --- Main Chat Area UI ---
 st.header("💬 Chat Interface")
 current_chat_state = get_current_chat_state()
@@ -449,37 +472,31 @@ with message_container:
     if not current_chat_state:
          st.info("Select a chat session or start a new one from the sidebar.")
     else:
-        # Display messages for the current chat
+        # Display messages
         for i, message in enumerate(current_chat_state.get("messages", [])):
             with st.chat_message(message["role"]):
-                # Display content (text part of the message)
+                # Display content
                 st.markdown(message["content"], unsafe_allow_html=False)
 
                 # --- Display Full DataFrame Button & Content ---
-                # Check if the message has a dataframe result attached
                 if message["role"] == "assistant" and "dataframe_result" in message:
                     df_result = message["dataframe_result"]
-                    # Check if it's a valid, non-empty DataFrame
                     if isinstance(df_result, pd.DataFrame) and not df_result.empty:
                         button_key = f"show_df_{current_chat_state.get('chat_id','_')}_{i}"
-                        # Use session state to track button click to persist display after rerun
                         if f"show_df_state_{button_key}" not in st.session_state:
-                             st.session_state[f"show_df_state_{button_key}"] = False # Initialize state
-
-                        if st.button("Show/Hide Full Data Table", key=button_key):
-                            # Toggle display state on button click
-                            st.session_state[f"show_df_state_{button_key}"] = not st.session_state[f"show_df_state_{button_key}"]
-                            st.rerun() # Rerun needed to update display based on state
-
-                        # Display the dataframe if the state for this button is True
+                             st.session_state[f"show_df_state_{button_key}"] = False
+                        # Use columns for button layout
+                        btn_cols = st.columns(4) # Adjust column count as needed
+                        with btn_cols[0]:
+                             if st.button("Show/Hide Full Table", key=button_key):
+                                 st.session_state[f"show_df_state_{button_key}"] = not st.session_state[f"show_df_state_{button_key}"]
+                                 st.rerun()
+                        # Display dataframe if state is True
                         if st.session_state.get(f"show_df_state_{button_key}", False):
                             st.dataframe(df_result)
-                # --- End DataFrame Display Logic ---
 
-
-                # Display sources (RAG or Database marker)
+                # Display sources
                 if message["role"] == "assistant" and message.get("metadata"):
-                     # Use columns to make expander less wide
                      exp_col1, exp_col2 = st.columns([0.9, 0.1])
                      with exp_col1:
                          with st.expander("Sources Used", expanded=False):
@@ -489,16 +506,16 @@ with message_container:
                                 if not meta: continue
                                 source = meta.get('source', 'Unknown')
                                 content_type = meta.get('content_type','unknown')
-                                db_source = meta.get('database') # Check for database source
+                                db_source = meta.get('database')
 
-                                if db_source and content_type == 'database_query_result': # Specific check for DB results
+                                if db_source and content_type == 'database_query_result':
                                     source_key = f"db_{db_source}"
                                     if source_key not in processed_sources:
-                                         tables_list_str = meta.get('tables', 'unknown') # Already a string
+                                         tables_list_str = meta.get('tables', 'unknown')
                                          display_str = f"- **Chat Database** (Tables: {tables_list_str})"
                                          sources_display.append(display_str)
                                          processed_sources.add(source_key)
-                                elif content_type != 'database_query_result': # Handle non-DB sources
+                                elif content_type != 'database_query_result':
                                     page_num = meta.get('page_number')
                                     slide_num = meta.get('slide_number')
                                     crawled = meta.get('crawled_url')
@@ -516,12 +533,12 @@ with message_container:
                                         elif content_type == 'data_import_failed': display_str += " (Data File - Import Failed)"
                                         elif content_type == 'embedded_image': display_str += " (Image Analysis)"
                                         elif content_type == 'image_analysis': display_str += " (Image File Analysis)"
-                                        elif content_type == 'ocr_page': display_str += f" (OCR Page {page_num})"
-                                        # Add other content types if needed
+                                        elif content_type == 'ocr_page': display_str += f" (OCR Page {page_num if page_num else '?'})"
+                                        elif content_type == 'text': display_str += " (Text Content)" # Added
+                                        elif content_type == 'slide_text': display_str += f" (Slide {slide_num} Text)" # Added
                                         sources_display.append(display_str)
                                         processed_sources.add(source_key)
                              st.markdown("\n".join(sorted(sources_display)))
-
 
                 # Display follow-up buttons
                 if message["role"] == "assistant" and message.get("follow_ups"):
@@ -533,6 +550,7 @@ with message_container:
                                st.rerun()
 
 # --- Input Area ---
+# ... (keep as is) ...
 input_container = st.container()
 with input_container:
     # Handle follow-up query state
@@ -565,7 +583,7 @@ with input_container:
 
     status_messages = []
     # Combine status logic
-    if current_chroma_status == "processing" or current_data_status == "processing": # Should use distinct status if needed
+    if current_chroma_status == "processing" or current_data_status == "importing": # Use distinct status if available
          status_messages.append("⏳ Processing uploaded files...")
     elif current_chroma_status == "success" and current_data_status in ["idle", "success"]:
          status_messages.append("✅ Files processed successfully.")
@@ -576,7 +594,6 @@ with input_container:
     elif current_chroma_status == "success" and current_data_status == "idle": # Text processed, no data files or data idle
          status_messages.append("✅ Text/Image documents processed.")
 
-
     if status_messages:
          full_message = " ".join(status_messages)
          if "⚠️" in full_message: status_placeholder.error(full_message)
@@ -584,21 +601,20 @@ with input_container:
          else: status_placeholder.success(full_message)
 
 
-    # --- Query Handling Logic ---
+    # --- Query Handling Logic (MODIFIED FOR SUMMARY) ---
     actual_prompt = prompt or query_input_value
 
     if actual_prompt and current_chat_state:
         current_chat_id_for_query = current_chat_state["chat_id"]
         selected_model = st.session_state.selected_text_model
 
-        # Add user message
         current_chat_state.setdefault("messages", []).append({"role": "user", "content": actual_prompt})
 
         # --- Determine how to respond ---
         assistant_response_content = None
         follow_ups = []
         used_metadata = []
-        response_df = None # <-- Initialize df variable
+        response_df = None
         prompt_lower = actual_prompt.lower().strip()
         greetings = ["hi", "hello", "hey", "yo", "greetings", "good morning", "good afternoon", "good evening"]
         help_keywords = ["help", "what can you do", "capabilities", "features", "functions", "what are your functions"]
@@ -610,14 +626,15 @@ with input_container:
         if is_greeting:
             assistant_response_content = random.choice(["Hello!", "Hi there!", "Hey!"]) + " How can I help? Upload files or ask a question."
         elif is_help_request:
-             assistant_response_content = f"""I can help with the following in this chat session:
+            # ... (keep help text as is) ...
+            assistant_response_content = f"""I can help with the following in this chat session:
 1.  **Process Files:** Upload documents (PDF, DOCX, TXT, PNG, JPG) or data files (CSV, XLSX, JSON). Text/image content is indexed for retrieval. Data files are loaded into a temporary database for this chat only.
 2.  **Answer Document Questions:** Ask questions based on the text/image documents uploaded *in this chat*. Uses Google's embedding model and the selected text model (`{selected_model}`).
 3.  **Analyze Data:** Ask questions in natural language about the CSV, Excel, or JSON files uploaded *in this chat* (e.g., "show me total sales", "what are the average prices per category?", "list customers from London"). This uses the selected text model (`{selected_model}`) to generate and run SQL queries on the chat's database.
 
 Use the 'New Chat' button in the sidebar to start fresh with different documents or data."""
         # 2. Check processing status
-        elif current_chroma_status == "processing" or current_data_status == "importing": # Use distinct status if available
+        elif current_chroma_status == "processing" or current_data_status == "importing":
             assistant_response_content = "Hold on! Files are still processing for this chat. Please wait."
         elif not st.session_state.api_key_configured:
              assistant_response_content = "I need a valid Google AI API Key configured in the sidebar."
@@ -625,22 +642,18 @@ Use the 'New Chat' button in the sidebar to start fresh with different documents
             # 3. Determine query type: Data Analysis vs. RAG
             chat_has_database = current_chat_state.get("chat_db_path") is not None
             looks_like_data_query = is_data_query(actual_prompt)
+            looks_like_summary_query = is_summary_query(actual_prompt) # <-- Check for summary
 
-            if chat_has_database and looks_like_data_query:
+            if chat_has_database and looks_like_data_query and not looks_like_summary_query: # Only data query if NOT summary
                 log_message(f"[{current_chat_id_for_query}] Query routed to Data Analysis Engine.", "info")
                 with st.spinner("Analyzing data and thinking..."):
-                     # --- Update call to handle new return signature ---
                      assistant_response_content, used_metadata, response_df = answer_data_query(
-                         actual_prompt,
-                         selected_model
+                         actual_prompt, selected_model
                      )
-                     # --- End Update ---
-                     # Follow-ups less useful for data results usually
-                     # follow_ups = generate_followup_questions(actual_prompt, assistant_response_content, selected_model)
 
             else:
-                # 4. Fallback to RAG using ChromaDB
-                log_message(f"[{current_chat_id_for_query}] Query routed to Document Q&A (RAG).", "info")
+                # 4. Handle RAG (including summary queries which use RAG but with filtering)
+                log_message(f"[{current_chat_id_for_query}] Query routed to Document Q&A (RAG). Summary Query: {looks_like_summary_query}", "info")
                 current_collection = get_current_collection()
                 if current_collection is None:
                       files_were_processed = bool(current_chat_state.get("processed_files"))
@@ -651,24 +664,51 @@ Use the 'New Chat' button in the sidebar to start fresh with different documents
                           log_message(f"[{current_chat_id_for_query}] RAG query, but collection is None or potentially empty.", "warning")
                 else:
                     with st.spinner("Searching documents and thinking..."):
+                        # Retrieve context
                         context_docs, context_metadatas = get_relevant_context(
                             actual_prompt, current_collection
                         )
+
+                        # --- Filter context IF it's a summary query ---
+                        if looks_like_summary_query and context_metadatas:
+                             log_message(f"[{current_chat_id_for_query}] Filtering context for summary query.", "debug")
+                             filtered_docs = []
+                             filtered_metadatas = []
+                             # Define content types prioritized for summaries
+                             summary_content_types = {'text', 'slide_text', 'ocr_page', 'crawled_web'}
+                             for doc, meta in zip(context_docs, context_metadatas):
+                                 if meta and meta.get('content_type') in summary_content_types:
+                                      filtered_docs.append(doc)
+                                      filtered_metadatas.append(meta)
+                             if not filtered_docs:
+                                 log_message(f"[{current_chat_id_for_query}] No primary text content found after filtering for summary. Using original context.", "warning")
+                                 # Optionally: Fallback to using original context if filtering removes everything
+                                 # Or let it proceed with empty context below
+                             else:
+                                 context_docs = filtered_docs
+                                 context_metadatas = filtered_metadatas
+                        # --- End Filtering ---
+
                         if not context_docs:
-                             assistant_response_content = "I couldn't find relevant information in the uploaded documents to answer that specific question."
+                             # Provide a more specific message if summary filtering led to empty context
+                             if looks_like_summary_query:
+                                  assistant_response_content = "I couldn't find enough text content in the uploaded documents to provide a general summary."
+                             else:
+                                 assistant_response_content = "I couldn't find relevant information in the uploaded documents to answer that specific question."
                              used_metadata = []
                         else:
                              assistant_response_content, used_metadata = generate_answer_from_context(
                                  actual_prompt, context_docs, context_metadatas, selected_model
                              )
-                             if assistant_response_content and isinstance(assistant_response_content, str) and \
+                             # Generate follow-ups only for non-summary RAG answers?
+                             if not looks_like_summary_query and assistant_response_content and isinstance(assistant_response_content, str) and \
                                 "cannot answer" not in assistant_response_content.lower() and \
                                 "error" not in assistant_response_content.lower() and \
                                 "blocked" not in assistant_response_content.lower():
                                   follow_ups = generate_followup_questions(actual_prompt, assistant_response_content, selected_model)
 
 
-        # --- Add Assistant Response (Store DataFrame if exists) ---
+        # --- Add Assistant Response ---
         if assistant_response_content is not None:
             assistant_message = {
                 "role": "assistant",
@@ -676,10 +716,8 @@ Use the 'New Chat' button in the sidebar to start fresh with different documents
                 "follow_ups": follow_ups,
                 "metadata": used_metadata
             }
-            # --- Store the DataFrame if it was returned ---
             if response_df is not None and isinstance(response_df, pd.DataFrame):
                 assistant_message["dataframe_result"] = response_df
-            # --- End Store ---
             current_chat_state["messages"].append(assistant_message)
 
         st.rerun()
