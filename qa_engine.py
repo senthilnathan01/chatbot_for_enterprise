@@ -1,15 +1,9 @@
 # --- START OF FILE qa_engine.py ---
-"""
-Handles the core question answering logic, including data queries and follow-ups.
-V3.2 Changes:
-- answer_data_query now returns the full DataFrame alongside the text summary.
-- Text summary indicates when a full table is available via a button.
-- Added explicit check for DataFrame type before attempting formatting.
-"""
+
 
 import streamlit as st
 import google.generativeai as genai
-import pandas as pd # Ensure pandas is imported
+import pandas as pd
 from typing import Optional, Tuple, List, Any # Import necessary types
 import json
 import re
@@ -153,7 +147,6 @@ def answer_data_query(query: str, text_model_name: str) -> Tuple[str, list, Opti
                         if rows_omitted_preview: omitted_parts.append(f"first {max_rows_preview} rows")
                         if omitted_parts: final_answer_string += f"\n*({', '.join(omitted_parts)} of {len(results_df_full)} total rows shown)*"
 
-                        # Add note about the full table button
                         final_answer_string += "\n\n*(Use the button below to view the full data table.)*"
 
                     except Exception as fmt_err:
@@ -162,8 +155,7 @@ def answer_data_query(query: str, text_model_name: str) -> Tuple[str, list, Opti
             else:
                 final_answer_string += "(No DataFrame results returned)\n"
 
-
-            # Add metadata (only add if query execution seemed successful)
+            # Add metadata
             metadata.append({
                 "source": f"database_{current_chat_state['chat_id']}",
                 "database": chat_db_path,
@@ -171,8 +163,7 @@ def answer_data_query(query: str, text_model_name: str) -> Tuple[str, list, Opti
                 "content_type": "database_query_result"
             })
 
-            # Include SQL and Explanation (maybe make this less prominent or conditional)
-            # For now, let's keep it in the text response, but it could go in the expander
+            # Keep SQL and Explanation less prominent or in expander (handled in main_app UI)
             # final_answer_string += f"\n\n**Generated SQL Query:**\n```sql\n{sql_query}\n```"
             # final_answer_string += f"\n\n**Explanation:**\n{explanation}"
 
@@ -186,17 +177,14 @@ def answer_data_query(query: str, text_model_name: str) -> Tuple[str, list, Opti
         if analyzer:
             analyzer.close()
 
-    # --- Return text summary, metadata, and the FULL DataFrame ---
     return final_answer_string.strip(), metadata, results_df_full
 
 
-# --- generate_answer_from_context (RAG - Keep As Is) ---
-# ... (unchanged) ...
-def generate_answer_from_context(query, context_docs, context_metadatas, text_model_name): # Added text_model_name
+# --- generate_answer_from_context (RAG - FIXED PROMPT) ---
+def generate_answer_from_context(query, context_docs, context_metadatas, text_model_name):
     """Generates answer using the specified LLM based purely on retrieved text context (RAG)."""
     if not context_docs:
         log_message("No relevant context found in documents for the query.", "warning")
-        # Check if the context contains markers for data files
         data_markers = [m for m in context_metadatas if m and m.get('content_type', '').startswith('data_import')]
         if data_markers:
             imported_files = list(set(m.get('source') for m in data_markers if m.get('source')))
@@ -207,47 +195,69 @@ def generate_answer_from_context(query, context_docs, context_metadatas, text_mo
 
     context_items = []
     source_files = set()
-    meta_list_for_response = [] # Store metadata associated with used context
+    meta_list_for_response = []
 
     for doc, meta in zip(context_docs, context_metadatas):
-         if not meta or not doc: continue # Skip if no metadata or empty doc
+         if not meta or not doc: continue
          source = meta.get('source', 'Unknown')
          source_files.add(source)
          citation = f"Source: {source}"
 
-         # Add specific location info if available
          if meta.get('page_number'): citation += f" (Page {meta.get('page_number')})"
          elif meta.get('slide_number'): citation += f" (Slide {meta.get('slide_number')})"
          elif meta.get('crawled_url'): citation += f" (From URL: {meta.get('crawled_url')})"
-         elif meta.get('content_type') == 'data_import_success':
-              tables_str = meta.get('tables', 'unknown tables')
-              citation += f" (Data File - Imported [{tables_str}], ask questions about content)"
-              context_items.append(f"{citation}\nContent:\n[Marker for imported data file '{source}'. Query its content directly.]")
-         elif meta.get('content_type') == 'data_import_failed':
-               citation += " (Data File - Import Failed)"
-               context_items.append(f"{citation}\nContent:\n[Marker for failed data import '{source}'.]")
-         else: # Regular text chunk
-             context_items.append(f"{citation}\nContent:\n{doc}")
+         # Add content type to citation for clarity if needed, e.g. "(Image Analysis)"
 
-         meta_list_for_response.append(meta) # Keep metadata for sources display
+         # --- Construct context item based on type ---
+         content_type = meta.get("content_type", "text") # Default to text
+         content_prefix = "Content"
+         actual_content = doc # Default to the document/text chunk
+
+         if content_type == 'data_import_success':
+              tables_str = meta.get('tables', 'unknown tables')
+              citation += f" (Data File - Imported [{tables_str}], query directly)"
+              # Use the specific marker text as the content
+              actual_content = f"[Marker for imported data file '{source}'. Query its content directly.]"
+              content_prefix = "Marker"
+         elif content_type == 'data_import_failed':
+               citation += " (Data File - Import Failed)"
+               actual_content = f"[Marker for failed data import '{source}'.]"
+               content_prefix = "Marker"
+         elif content_type in ['embedded_image', 'image_analysis', 'ocr_page']:
+              content_prefix = "Description/Analysis" # Use a different prefix for image content
+
+         context_items.append(f"{citation}\n{content_prefix}:\n{actual_content}")
+         # --- End content item construction ---
+
+         meta_list_for_response.append(meta)
 
 
     context_str = "\n\n---\n\n".join(context_items)
 
-    prompt = f"""Answer the following question based *only* on the provided context below. The context may include text excerpts, image descriptions, or markers indicating that data files were imported.
+    # --- *** MODIFIED PROMPT *** ---
+    prompt = f"""You are a helpful assistant answering questions based ONLY on the provided context below.
 
-If the question relates to a data file indicated by a marker (e.g., "[Data File Imported: ...]"), explain that the data needs to be queried directly and suggest asking a specific question about its content (like "how many rows?", "what is the total revenue?"). Do not try to answer based on the marker text itself.
+    **Provided Context:**
+    ```
+    {context_str}
+    ```
 
-For all other questions, synthesize an answer from the text/image content provided. Cite the sources (filename, page number, slide number, URL, or image reference) mentioned in the context for the information used in your answer. If the context doesn't contain the answer, state that clearly.
+    **Instructions:**
+    1.  Examine the user's question.
+    2.  Carefully read the **Provided Context**. Some context items might be text excerpts, image descriptions, or specific markers for data files.
+    3.  **If a context item's 'Content:' or 'Marker:' section explicitly starts with `[Marker for imported data file...` or `[Marker for failed data import...]`**, that item refers to a data file that cannot be directly read here. If the user's question seems related to such a file, explain that the data must be queried separately using specific questions about its contents (e.g., "how many rows?", "what is the total revenue?"). Do *not* try to answer using the marker text itself.
+    4.  **For all other context items (regular text, image descriptions):** If the user's question can be answered using this information, synthesize a comprehensive answer based *only* on what is provided in these items.
+    5.  **Cite your sources:** When using information from text or images, mention the source file and specific location (e.g., Page number, Slide number, Image reference) provided in the citation line (e.g., "Source: my_doc.pdf (Page 3)") for the relevant context item(s). Do not make up information.
+    6.  If the provided context (excluding data file markers) does not contain the information needed to answer the question, state that clearly (e.g., "Based on the provided documents, I cannot find information about X.").
 
-**Provided Context:**
-{context_str}
+    **User Question:**
+    ```
+    {query}
+    ```
 
-**User Question:**
-{query}
-
-**Answer (with citations where applicable):**
-"""
+    **Answer:**
+    """
+    # --- *** END MODIFIED PROMPT *** ---
 
     try:
         model = genai.GenerativeModel(text_model_name)
@@ -256,9 +266,11 @@ For all other questions, synthesize an answer from the text/image content provid
 
         if hasattr(response, 'text'):
             answer_text = response.text
-            # Add citation hint if LLM forgets and sources are few
+            # Add citation hint only if non-data sources were potentially used
             unique_sources = set(m.get("source", "Unknown") for m in meta_list_for_response if m and not m.get("content_type", "").startswith("data_import"))
-            if not any(f in answer_text for f in unique_sources) and len(unique_sources) < 4 and unique_sources:
+            # Check if answer itself contains any of the source filenames
+            contains_citation = any(f in answer_text for f in unique_sources)
+            if not contains_citation and len(unique_sources) < 4 and unique_sources:
                  answer_text += f"\n\n(Sources possibly consulted: {', '.join(sorted(list(unique_sources)))})"
             return answer_text, meta_list_for_response
         elif response.prompt_feedback and response.prompt_feedback.block_reason:
@@ -275,60 +287,58 @@ For all other questions, synthesize an answer from the text/image content provid
 
 # --- generate_followup_questions ---
 # ... (keep as is) ...
-def generate_followup_questions(query, answer, text_model_name): # Added text_model_name
-     """Generates relevant follow-up questions using the specified LLM."""
-     # Avoid generating follow-ups for data query results or errors
-     if "[Data File Imported:" in answer or "Generated SQL Query:" in answer or "Sorry, I encountered an error" in answer or "Result:" in answer:
-          return []
-
-     prompt = f"""Based on the user's question and the provided answer, suggest exactly 3 concise and relevant follow-up questions that naturally extend the conversation or explore related aspects mentioned in the answer.
-
-     Original Question: {query}
-     Provided Answer: {answer}
-
-     Rules:
-     - Focus on questions related to the *content* of the answer.
-     - Ensure questions are distinct from the original question.
-     - Do not suggest questions like "Can you tell me more?". Be specific.
-     - Output *only* a Python list of strings, like ["Question 1?", "Question 2?", "Question 3?"].
-
-     Suggested Follow-up Questions (Python list format ONLY):
-     """
-     try:
-         model = genai.GenerativeModel(text_model_name)
-         generation_config = genai.types.GenerationConfig(temperature=0.5) # Slightly more creative temp
-         response = model.generate_content(prompt, generation_config=generation_config)
-
-         if hasattr(response, 'text'):
-             response_text = response.text.strip()
-             log_message(f"Raw follow-up suggestions: {response_text}", "debug")
-             # Try parsing as a Python list literal first
-             match = re.search(r'\[\s*".*?"\s*(?:,\s*".*?"\s*)*\]', response_text, re.DOTALL)
-             if match:
-                  list_str = match.group()
-                  try:
-                       import ast
-                       followups = ast.literal_eval(list_str)
-                       if isinstance(followups, list) and all(isinstance(q, str) for q in followups):
-                            log_message(f"Parsed follow-ups via ast: {followups}", "debug")
-                            return followups[:3] # Take up to 3
-                  except Exception as eval_err:
-                       log_message(f"ast.literal_eval failed for follow-up list '{list_str}': {eval_err}", "warning")
-                       # Fallback to line parsing if ast fails
-
-             # Fallback: Extract lines ending with '?'
-             lines = [line.strip(' -*\'" ') for line in response_text.split('\n')]
-             questions = [line for line in lines if line.endswith('?') and len(line) > 10] # Basic sanity check
-             if questions:
-                  log_message(f"Fallback parsed follow-ups (lines): {questions[:3]}", "debug")
-                  return questions[:3]
-
-             log_message("Could not reliably parse follow-up suggestions into a list.", "warning")
-             return []
-         else:
-              log_message("LLM response for follow-ups has no text part.", "warning")
-              return []
-     except Exception as e:
-         # Don't show full exception to user, just log it
-         log_message(f"Error generating follow-up questions with LLM {text_model_name}: {e}", "error")
+def generate_followup_questions(query, answer, text_model_name):
+    """Generates relevant follow-up questions using the specified LLM."""
+    # Avoid generating follow-ups for data query results or errors
+    if "[Data File Imported:" in answer or "Generated SQL Query:" in answer or "Sorry, I encountered an error" in answer or "Result:" in answer:
          return []
+
+    prompt = f"""Based on the user's question and the provided answer, suggest exactly 3 concise and relevant follow-up questions that naturally extend the conversation or explore related aspects mentioned in the answer.
+
+    Original Question: {query}
+    Provided Answer: {answer}
+
+    Rules:
+    - Focus on questions related to the *content* of the answer.
+    - Ensure questions are distinct from the original question.
+    - Do not suggest questions like "Can you tell me more?". Be specific.
+    - Output *only* a Python list of strings, like ["Question 1?", "Question 2?", "Question 3?"].
+
+    Suggested Follow-up Questions (Python list format ONLY):
+    """
+    try:
+        model = genai.GenerativeModel(text_model_name)
+        generation_config = genai.types.GenerationConfig(temperature=0.5)
+        response = model.generate_content(prompt, generation_config=generation_config)
+
+        if hasattr(response, 'text'):
+            response_text = response.text.strip()
+            log_message(f"Raw follow-up suggestions: {response_text}", "debug")
+            match = re.search(r'\[\s*".*?"\s*(?:,\s*".*?"\s*)*\]', response_text, re.DOTALL)
+            if match:
+                 list_str = match.group()
+                 try:
+                      import ast
+                      followups = ast.literal_eval(list_str)
+                      if isinstance(followups, list) and all(isinstance(q, str) for q in followups):
+                           log_message(f"Parsed follow-ups via ast: {followups}", "debug")
+                           return followups[:3]
+                 except Exception as eval_err:
+                      log_message(f"ast.literal_eval failed for follow-up list '{list_str}': {eval_err}", "warning")
+
+            lines = [line.strip(' -*\'" ') for line in response_text.split('\n')]
+            questions = [line for line in lines if line.endswith('?') and len(line) > 10]
+            if questions:
+                 log_message(f"Fallback parsed follow-ups (lines): {questions[:3]}", "debug")
+                 return questions[:3]
+
+            log_message("Could not reliably parse follow-up suggestions into a list.", "warning")
+            return []
+        else:
+             log_message("LLM response for follow-ups has no text part.", "warning")
+             return []
+    except Exception as e:
+        log_message(f"Error generating follow-up questions with LLM {text_model_name}: {e}", "error")
+        return []
+
+# --- END OF FILE qa_engine.py ---
