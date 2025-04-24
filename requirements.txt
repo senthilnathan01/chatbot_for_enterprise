@@ -1,6 +1,5 @@
 streamlit
 google-generativeai
-streamlit
 chromadb
 pysqlite3-binary
 PyMuPDF 
@@ -17,4 +16,3 @@ numpy # Usually a dependency of pandas, but good to list
 Pillow # Image processing
 uuid # Standard library, no need to list typically
 rdflib
-pip
