@@ -1,0 +1,18 @@
+streamlit
+google-generativeai
+chromadb>=0.4.22
+PyMuPDF 
+python-docx
+python-pptx
+pandas
+openpyxl # For reading .xlsx
+xlrd # Potentially needed for older .xls files by pandas/DataImporter
+requests
+beautifulsoup4
+lxml # Parser for BeautifulSoup
+sqlalchemy
+numpy # Usually a dependency of pandas, but good to list
+Pillow # Image processing
+uuid # Standard library, no need to list typically
+rdflib
+pip
