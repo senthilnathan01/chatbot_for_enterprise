@@ -9,6 +9,18 @@ V5.5 Changes:
 - Updated message rendering logic to include the display button and action.
 """
 
+try:
+    __import__('pysqlite3')
+    import sys
+    # Print statements to help debug in Streamlit Cloud logs
+    print("Attempting to patch sqlite3 with pysqlite3...")
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+    print("Successfully patched sqlite3 with pysqlite3.")
+except ImportError:
+    print("pysqlite3 not found. Using default sqlite3. This will likely cause ChromaDB errors.")
+except KeyError:
+    print("pysqlite3 was imported but perhaps already handled? Or an issue popping it.")
+
 import streamlit as st
 import google.generativeai as genai
 import chromadb
