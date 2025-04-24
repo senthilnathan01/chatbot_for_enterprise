@@ -1,6 +1,8 @@
 streamlit
 google-generativeai
-chromadb>=0.4.22
+streamlit
+chromadb
+pysqlite3-binary
 PyMuPDF 
 python-docx
 python-pptx
