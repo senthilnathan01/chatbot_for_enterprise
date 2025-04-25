@@ -9,7 +9,7 @@ import logging
 import re
 from sqlalchemy import create_engine, Table, Column, Integer, Float, String, MetaData, ForeignKey, Boolean, DateTime, Date, inspect, text
 import datetime
-import argparse
+import argparse # Keep the import
 import glob
 from pathlib import Path
 import sys
@@ -25,6 +25,7 @@ class DataImporter_Gemini:
     Can be used with VannaReplica_Gemini to analyze the imported data.
     """
 
+    # --- Keep all class methods (__init__, connect, _clean_column_name, etc.) exactly as they were ---
     def __init__(self, db_path: str = None, verbose: bool = False):
         self.db_path = db_path
         self.verbose = verbose
@@ -76,10 +77,14 @@ class DataImporter_Gemini:
                  max_val = numeric_col.abs().max()
                  if pd.isna(max_val) or max_val == 0: precision, scale = 10, 2
                  else:
-                    int_digits = non_null.apply(lambda x: len(str(int(x))) if pd.notna(x) and x != 0 else 0).max()
-                    decimal_places = non_null.apply(lambda x: len(str(x).split('.')[-1]) if pd.notna(x) and '.' in str(x) else 0).max()
-                    precision = min(int(int_digits + decimal_places), 15) # Ensure int conversion
-                    scale = min(int(decimal_places), 10) # Ensure int conversion
+                    # Use try-except for potentially non-numeric values after dropna
+                    try: int_digits = non_null.apply(lambda x: len(str(int(x))) if pd.notna(x) and x != 0 else 0).max()
+                    except (ValueError, TypeError): int_digits = 5 # Fallback int digits
+                    try: decimal_places = non_null.apply(lambda x: len(str(x).split('.')[-1]) if pd.notna(x) and '.' in str(x) else 0).max()
+                    except (ValueError, TypeError): decimal_places = 2 # Fallback decimal places
+
+                    precision = min(int(int_digits + decimal_places), 15)
+                    scale = min(int(decimal_places), 10)
                  return Float, precision, scale
         except (ValueError, TypeError): pass
 
@@ -116,7 +121,6 @@ class DataImporter_Gemini:
         max_len = max(1, max_len if pd.notna(max_len) else 0)
         # Return length as int
         return String, int(min(max_len * 1.5, 2048)), 0
-
 
     def import_excel(
         self, file_input: Union[str, io.BytesIO],
@@ -263,11 +267,7 @@ class DataImporter_Gemini:
                 needs_bool_conversion = isinstance(sql_type, Boolean) and not pd.api.types.is_bool_dtype(col_dtype)
 
                 if needs_datetime_conversion:
-                    # *** MODIFICATION: ADD dayfirst=True ***
-                    # Attempt conversion with dayfirst=True, coercing errors
                     df_prepared[col_name] = pd.to_datetime(df_prepared[col_name], errors='coerce', dayfirst=True)
-                    # If conversion fails completely, original non-datetime values might remain
-                    # Check if conversion actually happened before trying .dt accessor
                     if pd.api.types.is_datetime64_any_dtype(df_prepared[col_name].dtype):
                         if isinstance(sql_type, Date):
                             df_prepared[col_name] = df_prepared[col_name].dt.date
@@ -308,7 +308,6 @@ class DataImporter_Gemini:
             raise
 
     def _create_relationships(self, relationships: List[Dict[str, str]]) -> None:
-        # Keep this experimental and warn about limitations
         logger.warning("Relationship creation via PRAGMA is experimental and limited.")
         temp_conn = None
         try:
@@ -316,12 +315,9 @@ class DataImporter_Gemini:
             temp_conn.execute("PRAGMA foreign_keys = ON;")
             for rel in relationships:
                 try:
-                    parent_table = rel.get('parent_table')
-                    parent_column = rel.get('parent_column')
-                    child_table = rel.get('child_table')
-                    child_column = rel.get('child_column')
+                    parent_table = rel.get('parent_table'); parent_column = rel.get('parent_column')
+                    child_table = rel.get('child_table'); child_column = rel.get('child_column')
                     if not all([parent_table, parent_column, child_table, child_column]): logger.warning(f"Incomplete relationship: {rel}. Skipping."); continue
-                    # Clean names (optional, assume done if called internally)
                     logger.warning(f"SQLite limitations prevent adding FK constraint directly for {child_table}.{child_column} -> {parent_table}.{parent_column}.")
                 except Exception as e: logger.error(f"Error processing relationship {rel}: {e}", exc_info=True)
         except sqlite3.Error as e: logger.error(f"SQLite error during relationship processing: {e}")
@@ -382,7 +378,9 @@ class DataImporter_Gemini:
              try: self.engine.dispose(); self.engine = None; logger.info("SQLAlchemy engine disposed.")
              except Exception as e: logger.error(f"Error disposing SQLAlchemy engine: {e}")
 
+# --- main function for CLI ---
 def main():
+    # *** MOVE ARGPARSE SETUP INSIDE MAIN ***
     parser = argparse.ArgumentParser(description='Import files into SQLite using DataImporter_Gemini')
     parser.add_argument('--db', required=True, help='Path to SQLite database file')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output')
@@ -403,7 +401,10 @@ def main():
     info_parser = subparsers.add_parser('info', help='Display DB info')
     query_parser = subparsers.add_parser('query', help='Execute SQL query')
     query_parser.add_argument('sql', help='SQL query string')
-    args = parser.parse_args()
+    # *** END ARGPARSE SETUP ***
+
+    args = parser.parse_args() # Now parse args inside main
+
     importer = None
     try:
         importer = DataImporter_Gemini(db_path=args.db, verbose=args.verbose)
@@ -411,13 +412,11 @@ def main():
             sheet_name_param = 0; table_names_map = None; primary_keys_map = None
             if args.sheet == "None": sheet_name_param = None
             elif args.sheet:
-                 items = [s.strip() for s in args.sheet.split(',')] # Splits comma-separated sheet names/indexes
+                 items = [s.strip() for s in args.sheet.split(',')]
                  parsed_items = []
                  for item in items:
-                      try:
-                           parsed_items.append(int(item)) # Tries to convert to integer (for index)
-                      except ValueError:
-                           parsed_items.append(item) # Keeps as string (for sheet name)
+                      try: parsed_items.append(int(item))
+                      except ValueError: parsed_items.append(item)
                  sheet_name_param = parsed_items[0] if len(parsed_items) == 1 else parsed_items
             if args.table and isinstance(sheet_name_param, (str, int)):
                  clean_table_name = importer._clean_column_name(args.table); table_names_map = {sheet_name_param: clean_table_name}
@@ -480,6 +479,7 @@ def main():
     finally:
         if importer: importer.close()
 
+# Guard the execution of main
 if __name__ == "__main__":
     main()
 # --- END OF FILE DataImporter_Gemini.py ---
