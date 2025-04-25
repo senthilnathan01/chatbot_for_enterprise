@@ -2,47 +2,57 @@
 """
 Main Streamlit application file for the Multi-Modal Q&A Chatbot.
 Handles UI, state management, and orchestrates calls to other modules.
-V5.6 Changes:
-- Added logic to detect summary queries.
-- Filter retrieved context for summary queries to prioritize text over image analysis.
-- Updated qa_engine call for summary context.
+V5.7 Changes:
+- Moved pysqlite3 patch to the absolute top of the file.
+- Simplified initialize_chroma_client to force in-memory for debugging.
 """
+
+# --- !! PATCH SQLITE FIRST !! ---
 try:
-    __import__('pysqlite3')
+    import pysqlite3
     import sys
-    # Print statements to help debug in Streamlit Cloud logs
-    print("Attempting to patch sqlite3 with pysqlite3...")
-    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-    print("Successfully patched sqlite3 with pysqlite3.")
+    # Check if patching is necessary (avoid redundant messages)
+    if 'sqlite3' not in sys.modules or sys.modules['sqlite3'].sqlite_version_info < (3, 35, 0):
+        print("Attempting to patch sqlite3 with pysqlite3...")
+        sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+        # Verify patch
+        import sqlite3
+        print(f"Successfully patched sqlite3. Using version: {sqlite3.sqlite_version}")
+    else:
+        print(f"sqlite3 version {sys.modules['sqlite3'].sqlite_version} >= 3.35.0 or already patched. Skipping patch.")
+
 except ImportError:
-    print("pysqlite3 not found. Using default sqlite3. This will likely cause ChromaDB errors.")
+    print("WARNING: pysqlite3 not found. Using default sqlite3. ChromaDB may fail.")
 except KeyError:
-    print("pysqlite3 was imported but perhaps already handled? Or an issue popping it.")
+    print("WARNING: Error during pysqlite3 patching (KeyError). Using default sqlite3.")
+except Exception as e:
+    print(f"ERROR: An unexpected error occurred during pysqlite3 patching: {e}")
+# --- !! END PATCH !! ---
+
 
 import streamlit as st
 import google.generativeai as genai
-import chromadb
+import chromadb # Now import chromadb AFTER the patch
 import os
 import time
 import random
 import string
 import pandas as pd
 from datetime import datetime
-import re # Import re for summary query detection
+import re
 
 # Import functions from our modules
 from config import (
     DEFAULT_COLLECTION_NAME_PREFIX, ALL_SUPPORTED_TYPES,
-    VECTOR_DB_PERSIST_PATH, CHAT_DB_DIRECTORY,
+    VECTOR_DB_PERSIST_PATH, CHAT_DB_DIRECTORY, # Keep VECTOR_DB_PERSIST_PATH for config clarity
     TEXT_MODEL_NAME as DEFAULT_TEXT_MODEL_NAME,
-    SUPPORTED_DATA_TYPES, SUPPORTED_TEXT_TYPES # Added text types
+    SUPPORTED_DATA_TYPES, SUPPORTED_TEXT_TYPES
 )
 from utils import log_message, generate_unique_id
 from vector_store import initialize_embedding_function, process_and_embed, get_relevant_context
 from qa_engine import is_data_query, answer_data_query, generate_answer_from_context, generate_followup_questions
 
 # --- Page Configuration ---
-# ... (keep as is) ...
 st.set_page_config(
     page_title="Persistent Multi-Modal Q&A + Data Analysis",
     layout="wide",
@@ -52,34 +62,40 @@ st.set_page_config(
 st.title("📄 Persistent Multi-Modal Q&A & Data Analysis")
 st.caption("Switch chats, upload docs/data, ask questions about text, images, or analyze your CSV/Excel/JSON!")
 
-
 # --- Constants for Model Selection ---
-AVAILABLE_TEXT_MODELS = ["gemini-2.0-flash"]
+AVAILABLE_TEXT_MODELS = ["gemini-1.5-flash"] # Adjusted to only flash as per previous error
 
 # --- Global Variables / Initializations ---
-# ... (keep initialize_chroma_client as is) ...
 @st.cache_resource
 def initialize_chroma_client():
-    """Initializes ChromaDB client, cached for the session."""
-    log_message("Initializing ChromaDB client...", "debug")
-    persist_path = VECTOR_DB_PERSIST_PATH
-    if persist_path and os.path.exists(persist_path):
-        log_message(f"Using persistent ChromaDB storage at: {persist_path}", "info")
-        try:
-            client = chromadb.PersistentClient(path=persist_path)
-            return client
-        except Exception as e:
-             log_message(f"Error loading persistent ChromaDB from {persist_path}: {e}. Falling back to in-memory.", "error")
-             log_message("Using in-memory ChromaDB storage.", "info")
-             client = chromadb.Client()
-             return client
-    else:
-        if persist_path:
-            log_message(f"Persistent path {persist_path} not found or invalid. Using in-memory ChromaDB storage.", "warning")
-        else:
-            log_message("Using in-memory ChromaDB storage.", "info")
-        client = chromadb.Client()
+    """Initializes ChromaDB client (FORCED IN-MEMORY for debugging)."""
+    log_message("Initializing ChromaDB client (Forced In-Memory)...", "info")
+    try:
+        # --- FORCE IN-MEMORY ---
+        # Comment out persistence logic for now
+        # persist_path = VECTOR_DB_PERSIST_PATH
+        # if persist_path and os.path.exists(persist_path):
+        #      log_message(f"Attempting persistent ChromaDB storage at: {persist_path}", "info")
+        #      client = chromadb.PersistentClient(path=persist_path)
+        #      # Add a check after initialization
+        #      client.heartbeat() # Throws exception if connection fails
+        #      log_message("Persistent client initialized successfully.", "info")
+        #      return client
+        # else:
+        #      if persist_path: log_message(f"Persistent path {persist_path} not found/invalid.", "warning")
+        #      log_message("Using in-memory ChromaDB storage.", "info")
+        client = chromadb.Client() # Use standard in-memory client
+        client.heartbeat() # Check connection
+        log_message("In-memory client initialized successfully.", "info")
         return client
+        # --- END FORCE IN-MEMORY ---
+    except Exception as e:
+        log_message(f"FATAL: Failed to initialize ChromaDB client: {e}", "error")
+        st.error(f"Failed to initialize Database Backend: {e}. Please check logs or environment configuration.")
+        # Stop execution or return None? Returning None might cause downstream errors.
+        # Let's try stopping the app cleanly if DB fails critically.
+        st.stop()
+        # return None # Or return None if you want the app to limp along
 
 # --- Session State Management ---
 # ... (keep create_new_chat_state, initialize_multi_chat_state, get_current_chat_state as is) ...
@@ -201,6 +217,7 @@ with st.sidebar:
         final_google_api_key = None
         st.session_state.google_api_key = None
 
+
 # --- Configure Google AI API and Embedding Function ---
 # ... (keep as is) ...
 if final_google_api_key and not st.session_state.api_key_configured:
@@ -233,6 +250,7 @@ with st.sidebar:
          st.warning("API Key Needed.")
 
 # --- Initialize ChromaDB Client ---
+# This now happens *after* the patch attempt
 chroma_client = initialize_chroma_client()
 
 # --- File Processing Callback ---
@@ -273,14 +291,22 @@ def handle_file_upload():
     log_message(f"[{current_chat_id}] Resetting file status for new upload...")
     log_message(f"[{current_chat_id}] Processing {len(uploaded_files)} files...")
 
-    client = initialize_chroma_client()
+    client = initialize_chroma_client() # Get potentially cached client
+    # Add a check here in case initialization failed and returned None
+    if not client:
+        log_message(f"[{current_chat_id}] Cannot process files: ChromaDB client is unavailable.", "error")
+        st.error("Database backend client failed to initialize. Cannot process files.")
+        chat_state["processing_status"] = "error"
+        chat_state["data_import_status"] = "error"
+        return
+
     emb_func = st.session_state.embedding_func # Should be ready if api_key_configured is True
     collection = None
     chroma_success = False
     data_import_occurred = False
     data_import_success = True # Assume true unless a data file fails
 
-    if not client or not emb_func:
+    if not client or not emb_func: # Redundant check, but safe
          log_message(f"[{current_chat_id}] Cannot process files: Client/Embedding func unavailable.", "error")
          chat_state["processing_status"] = "error"
          chat_state["data_import_status"] = "error"
@@ -296,6 +322,11 @@ def handle_file_upload():
     except Exception as e:
          log_message(f"[{current_chat_id}] Fatal Error getting/creating ChromaDB collection: {e}", "error")
          st.exception(e)
+         # Add more specific feedback based on the error if possible
+         if "no such table: acquire_write" in str(e):
+              st.error("Failed to access vector database backend (SQLite/ChromaDB setup issue). Please check environment/logs.")
+         else:
+              st.error(f"Failed to initialize vector collection: {e}")
          chat_state["processing_status"] = "error"
          chat_state["data_import_status"] = "error"
          return
@@ -303,23 +334,18 @@ def handle_file_upload():
     # --- Call process_and_embed ---
     if collection and emb_func:
          log_message(f"[{current_chat_id}] Calling process_and_embed...", "debug")
-         # process_and_embed updates chat_state["processed_files"] internally via file_parsers
          chroma_add_attempted = process_and_embed(uploaded_files, collection, emb_func)
-         # Check overall chroma success by seeing if *any* file associated with chroma add succeeded
          chroma_success = any(status == 'success' for filename, status in chat_state.get("processed_files", {}).items()
                               if not filename.lower().endswith(tuple(f".{ext}" for ext in SUPPORTED_DATA_TYPES)))
 
-
-         # Check individual file statuses for data import outcome
          data_file_extensions = tuple(f".{ext}" for ext in SUPPORTED_DATA_TYPES)
          for f in uploaded_files:
              if f.name.lower().endswith(data_file_extensions):
-                 data_import_occurred = True # Mark that we processed at least one data file
+                 data_import_occurred = True
                  status = chat_state["processed_files"].get(f.name)
-                 if status != 'success': # Consider anything not success as failure for data import
+                 if status != 'success':
                      data_import_success = False
                      log_message(f"Data import for {f.name} marked as {status}.", "warning")
-                     # break # Let all files process, report aggregate status
 
     else:
          log_message(f"[{current_chat_id}] Processing aborted: Collection/Embedding func unavailable.", "error")
@@ -328,17 +354,15 @@ def handle_file_upload():
 
     # Update final statuses
     chat_state["processing_status"] = "success" if chroma_success else "error"
-    # Determine final data status
-    if not data_import_occurred:
-         chat_state["data_import_status"] = "idle" # No data files attempted
+    if not data_import_occurred: chat_state["data_import_status"] = "idle"
     elif data_import_success:
          chat_state["data_import_status"] = "success"
          st.toast(f"📊 Data file(s) imported successfully into chat database!", icon="📊")
-    else:
-         chat_state["data_import_status"] = "error"
+    else: chat_state["data_import_status"] = "error"
 
     log_message(f"Callback: Set Chroma status to '{chat_state['processing_status']}' for chat {current_chat_id}", "debug")
     log_message(f"Callback: Set Data Import status to '{chat_state['data_import_status']}' for chat {current_chat_id}", "debug")
+
 
 # --- Helper to get Chroma Collection ---
 # ... (keep as is) ...
@@ -354,14 +378,21 @@ def get_current_collection():
          return None
     try:
         client = initialize_chroma_client()
+        if not client: # Check if client initialization failed
+             log_message("Cannot get collection: Chroma client is unavailable.", "error")
+             return None
         collection = client.get_collection(name=collection_name, embedding_function=st.session_state.embedding_func)
         return collection
     except Exception as e:
         log_message(f"Collection '{collection_name}' not found or error getting it (may need upload). Error: {e}", "debug")
+        # Check if the error is the one we're tracking
+        if "no such table: acquire_write" in str(e):
+             st.error("Failed to access vector database backend (SQLite/ChromaDB setup issue). Please check environment/logs.")
         return None
 
+
 # --- Sidebar UI ---
-# ... (keep as is, including deletion logic) ...
+# ... (keep as is) ...
 with st.sidebar:
     # Chat Management
     st.header("📄 Chat Management")
@@ -420,8 +451,12 @@ with st.sidebar:
                     collection_name_to_delete = chat_state_to_delete.get('collection_name')
                     if collection_name_to_delete:
                         try:
-                            log_message(f"Deleting Chroma collection: {collection_name_to_delete}", "info")
-                            chroma_client.delete_collection(name=collection_name_to_delete)
+                            client = initialize_chroma_client() # Get client again
+                            if client:
+                                log_message(f"Deleting Chroma collection: {collection_name_to_delete}", "info")
+                                client.delete_collection(name=collection_name_to_delete)
+                            else:
+                                log_message(f"Cannot delete Chroma collection {collection_name_to_delete}: client unavailable", "error")
                         except Exception as e:
                             log_message(f"Chroma Collection '{collection_name_to_delete}' not found or delete failed: {e}", "warning")
                     # Delete Associated SQLite Database File
@@ -455,6 +490,7 @@ with st.sidebar:
                 st.rerun() # Rerun to update the UI
 
 # --- Helper Function to Detect Summary Queries ---
+# ... (keep as is) ...
 def is_summary_query(query: str) -> bool:
     """Checks if a query is likely asking for a general summary."""
     query_lower = query.lower().strip()
@@ -474,6 +510,7 @@ def is_summary_query(query: str) -> bool:
     return False
 
 # --- Main Chat Area UI ---
+# ... (keep as is) ...
 st.header("💬 Chat Interface")
 current_chat_state = get_current_chat_state()
 
@@ -560,6 +597,7 @@ with message_container:
                                st.session_state.rerun_query = q
                                st.rerun()
 
+
 # --- Input Area ---
 # ... (keep as is) ...
 input_container = st.container()
@@ -612,7 +650,8 @@ with input_container:
          else: status_placeholder.success(full_message)
 
 
-    # --- Query Handling Logic (MODIFIED FOR SUMMARY) ---
+# --- Query Handling Logic ---
+# ... (keep as is) ...
     actual_prompt = prompt or query_input_value
 
     if actual_prompt and current_chat_state:
@@ -667,15 +706,20 @@ Use the 'New Chat' button in the sidebar to start fresh with different documents
                 log_message(f"[{current_chat_id_for_query}] Query routed to Document Q&A (RAG). Summary Query: {looks_like_summary_query}", "info")
                 current_collection = get_current_collection()
                 if current_collection is None:
-                      files_were_processed = bool(current_chat_state.get("processed_files"))
-                      if not files_were_processed:
-                          assistant_response_content = f"It looks like you're asking about specific information, but no documents or data files have been processed in this chat ('{current_chat_id_for_query[-4:]}') yet. Please upload the relevant file(s)."
+                      # Check if client itself failed initialization first
+                      if not initialize_chroma_client():
+                           assistant_response_content = "Error: The vector database backend failed to initialize. Cannot answer questions."
                       else:
-                          assistant_response_content = f"I don't have text content to search for this chat ('{current_chat_id_for_query[-4:]}'). If you uploaded data files (CSV/Excel/JSON), try asking specific questions about the data (e.g., 'how many rows?', 'what is the total amount?'). If you uploaded documents, please try uploading them again."
-                          log_message(f"[{current_chat_id_for_query}] RAG query, but collection is None or potentially empty.", "warning")
+                           # Client is ok, but collection missing
+                           files_were_processed = bool(current_chat_state.get("processed_files"))
+                           if not files_were_processed:
+                               assistant_response_content = f"It looks like you're asking about specific information, but no documents or data files have been processed in this chat ('{current_chat_id_for_query[-4:]}') yet. Please upload the relevant file(s)."
+                           else:
+                               assistant_response_content = f"I don't have text content to search for this chat ('{current_chat_id_for_query[-4:]}'). If you uploaded data files (CSV/Excel/JSON), try asking specific questions about the data (e.g., 'how many rows?', 'what is the total amount?'). If you uploaded documents, please try uploading them again or check processing status."
+                               log_message(f"[{current_chat_id_for_query}] RAG query, but collection is None or potentially empty.", "warning")
                 else:
+                    # Collection exists, proceed
                     with st.spinner("Searching documents and thinking..."):
-                        # Retrieve context
                         context_docs, context_metadatas = get_relevant_context(
                             actual_prompt, current_collection
                         )
@@ -685,7 +729,6 @@ Use the 'New Chat' button in the sidebar to start fresh with different documents
                              log_message(f"[{current_chat_id_for_query}] Filtering context for summary query.", "debug")
                              filtered_docs = []
                              filtered_metadatas = []
-                             # Define content types prioritized for summaries
                              summary_content_types = {'text', 'slide_text', 'ocr_page', 'crawled_web'}
                              for doc, meta in zip(context_docs, context_metadatas):
                                  if meta and meta.get('content_type') in summary_content_types:
@@ -693,15 +736,12 @@ Use the 'New Chat' button in the sidebar to start fresh with different documents
                                       filtered_metadatas.append(meta)
                              if not filtered_docs:
                                  log_message(f"[{current_chat_id_for_query}] No primary text content found after filtering for summary. Using original context.", "warning")
-                                 # Optionally: Fallback to using original context if filtering removes everything
-                                 # Or let it proceed with empty context below
                              else:
                                  context_docs = filtered_docs
                                  context_metadatas = filtered_metadatas
                         # --- End Filtering ---
 
                         if not context_docs:
-                             # Provide a more specific message if summary filtering led to empty context
                              if looks_like_summary_query:
                                   assistant_response_content = "I couldn't find enough text content in the uploaded documents to provide a general summary."
                              else:
@@ -711,7 +751,6 @@ Use the 'New Chat' button in the sidebar to start fresh with different documents
                              assistant_response_content, used_metadata = generate_answer_from_context(
                                  actual_prompt, context_docs, context_metadatas, selected_model
                              )
-                             # Generate follow-ups only for non-summary RAG answers?
                              if not looks_like_summary_query and assistant_response_content and isinstance(assistant_response_content, str) and \
                                 "cannot answer" not in assistant_response_content.lower() and \
                                 "error" not in assistant_response_content.lower() and \
