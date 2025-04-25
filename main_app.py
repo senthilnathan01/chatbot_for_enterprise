@@ -278,10 +278,16 @@ with st.sidebar:
                 if chat_state_to_delete:
                     collection_name_to_delete = chat_state_to_delete.get('collection_name')
                     if collection_name_to_delete:
-                        try: client = initialize_chroma_client();
-                             if client: log_message(f"Deleting Chroma collection: {collection_name_to_delete}", "info"); client.delete_collection(name=collection_name_to_delete)
-                             else: log_message(f"Cannot delete Chroma coll {collection_name_to_delete}: client unavailable", "error")
-                        except Exception as e: log_message(f"Chroma Collection '{collection_name_to_delete}' delete failed: {e}", "warning")
+                        try:
+                            client = initialize_chroma_client() # Get client again
+                            # --- PROBLEM AREA ---
+                            if client: # This 'if' is directly after 'try' without an 'except' or 'finally'
+                                log_message(f"Deleting Chroma collection: {collection_name_to_delete}", "info")
+                                client.delete_collection(name=collection_name_to_delete)
+                            else:
+                                log_message(f"Cannot delete Chroma collection {collection_name_to_delete}: client unavailable", "error")
+                        except Exception as e:
+                            log_message(f"Chroma Collection '{collection_name_to_delete}' delete failed: {e}", "warning")
                     db_path_to_delete = chat_state_to_delete.get('chat_db_path')
                     if db_path_to_delete and os.path.exists(db_path_to_delete):
                          try: log_message(f"Deleting chat DB file: {db_path_to_delete}", "info"); os.remove(db_path_to_delete); log_message(f"Deleted DB file: {db_path_to_delete}", "info")
