@@ -52,7 +52,7 @@ st.title("📄 Persistent Multi-Modal Q&A & Data Analysis")
 st.caption("Switch chats, upload docs/data, ask questions about text, images, or analyze your CSV/Excel/JSON!")
 
 # --- Constants for Model Selection ---
-AVAILABLE_TEXT_MODELS = ["gemini-1.5-flash"]
+AVAILABLE_TEXT_MODELS = ["gemini-2.0-flash"]
 
 # --- Global Variables / Initializations ---
 @st.cache_resource
