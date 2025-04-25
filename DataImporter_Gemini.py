@@ -411,8 +411,13 @@ def main():
             sheet_name_param = 0; table_names_map = None; primary_keys_map = None
             if args.sheet == "None": sheet_name_param = None
             elif args.sheet:
-                 items = [s.strip() for s in args.sheet.split(',')]; parsed_items = []
-                 for item in items: try: parsed_items.append(int(item)); except ValueError: parsed_items.append(item)
+                 items = [s.strip() for s in args.sheet.split(',')] # Splits comma-separated sheet names/indexes
+                 parsed_items = []
+                 for item in items:
+                      try:
+                           parsed_items.append(int(item)) # Tries to convert to integer (for index)
+                      except ValueError:
+                           parsed_items.append(item) # Keeps as string (for sheet name)
                  sheet_name_param = parsed_items[0] if len(parsed_items) == 1 else parsed_items
             if args.table and isinstance(sheet_name_param, (str, int)):
                  clean_table_name = importer._clean_column_name(args.table); table_names_map = {sheet_name_param: clean_table_name}
