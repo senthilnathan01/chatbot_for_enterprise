@@ -455,7 +455,8 @@ def main():
                 if fks and isinstance(fks, list) and not any("error" in str(k) for k in fks):
                     print(f"  FKs: ({len(fks)})");
                     for fk in fks: cols = ', '.join(fk.get('constrained_columns', ['?'])); ref_table = fk.get('referred_table', '?'); ref_cols = ', '.join(fk.get('referred_columns', ['?'])); print(f"    - ({cols}) -> {ref_table}({ref_cols})")
-                elif not fks: print("  FKs: None"); else: print(f"  FKs: {fks}")
+                elif not fks: print("  FKs: None")
+                else: print(f"  FKs: {fks}")
                 print("  Sample Data (first 5 rows):"); sample_data = info.get('sample_data', [])
                 if sample_data and isinstance(sample_data, list) and not any("error" in str(s) for s in sample_data):
                      try: sample_df = pd.DataFrame(sample_data); print(sample_df.to_string(index=False, max_rows=5, max_cols=10));
