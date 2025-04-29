@@ -9,6 +9,9 @@ A Streamlit-based application enabling conversational Q&A over uploaded document
 
 https://mando-chatbot.streamlit.app/
 
+![image](https://github.com/user-attachments/assets/d6d71695-f741-46e2-b40c-5d46c03eb924)
+
+
 ## ✨ Features
 
 - **Multi-Modal Input**  
