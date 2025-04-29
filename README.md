@@ -64,7 +64,7 @@ multimodal_qa_data_app/
 
 ### 1. Clone the Repo
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/senthilnathan01/chatbot_for_enterprise
 cd multimodal_qa_data_app
 ```
 
@@ -99,6 +99,10 @@ pip install -r requirements.txt
 
 ```bash
 streamlit run main_app.py
+```
+
+```bash
+python -m streamlit run main_app.py
 ```
 
 Then open [http://localhost:8501](http://localhost:8501) in your browser.
