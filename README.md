@@ -100,6 +100,7 @@ pip install -r requirements.txt
 ```bash
 streamlit run main_app.py
 ```
+OR
 
 ```bash
 python -m streamlit run main_app.py
